@@ -13,14 +13,14 @@
 
 ## 1. The concept on one page
 
-1. **One lead, many leaves.** Claude Code leads. It plans, routes, briefs and verifies. It writes no feature code. Workers never start their own workers.
-2. **The writer never approves its own work.** Claude writes code, Codex reviews it. Two model families make different mistakes, so they catch each other's. Specs get a separate reviewer, tests a separate author.
+1. **One lead, many leaves.** Claude Code leads. It plans, routes, briefs and verifies. It writes code only for changes of about 20 lines or less and for chores. Workers never start their own workers.
+2. **The writer never approves its own work.** Claude writes code, Codex reviews it. Two model families make different mistakes, so they catch each other's. Risky or unclear specs get a separate reviewer, tests always a separate author.
 3. **Flat rate first.** The Max and Pro subscriptions are already paid. They carry all thinking and all sensitive work. OpenRouter is pay-per-token and gets only non-sensitive work that needs no repository, under a hard budget.
 4. **Process depth follows risk.** Every task gets a tier (T0, T1, T2) before work starts. The tier fixes how many specs, tests, reviews and audits the task gets. Nobody decides "one more round" on the fly. A risk gate then rates the finished pull request and decides who merges it.
 5. **Machines check first, models second.** Lint, types, tests, secret scan, dependency scan and static analysis run before any model reviews anything. They are free, fast and never tired.
 6. **Loops have budgets.** Every loop has a round limit, a stop rule and an exit to the human. A used-up budget is never an approval.
 7. **Files, not chat history.** Specs and architecture decisions live in the repository. Task state, review findings and the event log live in a local state folder outside it. Agents have no memory, so every handoff is a self-contained brief.
-8. **The most expensive model works where mistakes are most expensive.** Fable 5.2 does architecture, spec review and security. It writes no code.
+8. **The most expensive model works where mistakes are most expensive.** Fable 5.2 does architecture, security and the review of unclear specs. It writes no code.
 9. **The team measures itself.** Every loop leaves one log line. A monthly retro turns the numbers into proposed changes to models, budgets and skills. The human merges them.
 
 ---
@@ -30,7 +30,7 @@
 | Provider | Billing | Data trust | Used for | Not used for |
 |---|---|---|---|---|
 | **Claude Code** (Max plan) | Flat rate, usage limits per session and per week | First party | Lead, architecture, specs, spec review, tests, implementation, security, QA, chores | Reviewing its own code |
-| **Codex** (Pro plan) | Flat rate, usage limits | First party | Code review, security review, risk rating, review of critical specs, second opinion | Routine implementation and routine spec review. Its allowance is the scarce one |
+| **Codex** (Pro plan) | Flat rate, usage limits | First party | Code review, security review, risk rating, review of critical specs | Routine implementation and routine spec review. Its allowance is the scarce one |
 | **OpenCode → OpenRouter** | Pay per token | Third party, differs per upstream provider | Bulk work that needs no repository, third opinion on irreversible decisions, budgeted overflow | Security-relevant code, secrets, unfixed findings |
 
 ### Data classes decide which provider may see what
@@ -55,10 +55,10 @@ flowchart LR
         I["Implementers<br/>Opus 5.5, later Sonnet 5.5"]
         Q["QA and E2E<br/>Sonnet 5.5"]
         S["Scouts, Docs, Maintainer<br/>Haiku 5.5"]
+        C["Consultant<br/>Opus 5.5"]
     end
     subgraph CX["Codex · Pro plan · flat rate"]
         R["Code and security reviewer,<br/>risk rater<br/>GPT-6.1 Sol"]
-        C["Consultant<br/>GPT-6 Astra"]
     end
     subgraph OR["OpenCode with OpenRouter · pay per token"]
         B["Repo-free bulk work, overflow<br/>DeepSeek V4.1 Flash"]
@@ -82,29 +82,31 @@ flowchart LR
 
 | # | Role | Job | Model | Effort | Active |
 |---|---|---|---|---|---|
-| 1 | **Lead** | Scope, tier, briefs, gates, final verification. No feature code | Claude Sonnet 5.5 | high | Always |
+| 1 | **Lead** | Scope, tier, briefs, gates, final verification. Implements changes of about 20 lines or less and chores itself | Claude Sonnet 5.5 | high | Always |
 | 2 | **Architect** | Architecture, decision records, slicing into milestones | Claude Fable 5.2 | high | Inception, once per milestone |
 | 3 | **Spec writer** | Feature spec with numbered acceptance criteria | Claude Sonnet 5.5 (T1), Opus 5.5 (T2) | medium / high | Per slice |
-| 4 | **Spec reviewer** | Independent approval of the spec against request and code | Claude Fable 5.2 (T1). Codex GPT-6.1 Sol when the spec hits a security trigger or the data path (T2) | medium | Per slice |
+| 4 | **Spec reviewer** | Independent approval of the spec against request and code | Codex GPT-6.1 Sol for T2 specs. Claude Fable 5.2 for a T1 spec with an unclear design. A clear T1 spec gets no review | medium | T2 slices, unclear T1 slices |
 | 5 | **Test author** | Acceptance tests from the spec, before code exists. Always a separate agent | Claude Sonnet 5.5 (T1), Opus 5.5 for security, state and concurrency (T2) | medium / high | Per slice |
-| 6 | **Implementer** | Smallest complete change that makes the tests pass | Claude Opus 5.5 (T1, T2). Sonnet 5.5 for T1 once the replay test passes. Haiku 5.5 (T0) | medium | Per slice |
+| 6 | **Implementer** | Smallest complete change that makes the tests pass, for changes above about 20 lines | Claude Opus 5.5 (T1, T2). Sonnet 5.5 for T1 once the replay test passes. Haiku 5.5 (T0) | medium | Per slice |
 | 7 | **Code and security reviewer** | Verdict plus findings with severity. Security review of triggered changes. Risk rating for the gate | Codex GPT-6.1 Sol | medium, high for the security review | Per slice from T1 |
 | 8 | **Security engineer** | Threat model, second security review of triggered changes, milestone audit | Claude Fable 5.2 | high | Inception, T2 changes, before release |
 | 9 | **QA** | Starts the app, runs end-to-end and exploratory checks, collects proof | Claude Sonnet 5.5 | medium | Slices with runtime behaviour, release |
 | 10 | **Scout** | Code search and log reading (no network), or web research (no repository) | Claude Haiku 5.5 | low | On demand |
 | 11 | **Docs writer** | User docs, changelog, runbooks | Claude Haiku 5.5 | low | Per slice, release |
-| 12 | **Consultant** | One bounded hard question, with evidence | Codex GPT-6 Astra | high | Max once per open question |
+| 12 | **Consultant** | One bounded hard question, with evidence | Claude Opus 5.5 | high | Max once per open question |
 | 13 | **Third voice** | Extra opinion from a third model family | OpenRouter Gemini 4 Hydrogen | high | Irreversible decisions only |
 | 14 | **Maintainer** | Scheduled checks: dependencies, advisories, flaky tests, doc drift. It reports, the delivery loop fixes by tier | Claude Haiku 5.5, escalates to Sonnet 5.5 | low | Scheduled |
 | 15 | **Bulk worker** | Mass jobs that need no repository: translations, synthetic test data, summaries of public material. Overflow for Green work | OpenRouter DeepSeek V4.1 Flash | low | Budgeted, on demand |
 
 ### Rules behind the table
 
-- **Vendor separation.** Code is always reviewed by another vendor. Specs and tests stay inside Claude, but go to a separate agent on a different model. A spec that hits a security trigger or the data path still goes to Codex. When a subscription limit is reached, the stage pauses and resumes after the reset. The one planned exception is a role swap that the lead sets at the start of a slice: Codex implements, Claude reviews. The separation stays.
+- **Vendor separation.** Code is always reviewed by another vendor. Tests stay inside Claude, but go to a separate agent. A T2 spec goes to Codex. A T1 spec is reviewed only when its design is unclear, then by Fable. When a subscription limit is reached, the stage pauses and resumes after the reset. The one planned exception is a role swap that the lead sets at the start of a slice: Codex implements, Claude reviews. The separation stays.
 - **Start small, escalate once.** A role starts on the cheapest model likely to succeed. When its three attempts are used up, it moves up one model tier, once: Haiku to Sonnet, Sonnet to Opus. An Opus worker has no tier above it and goes straight to the lead. After that the lead or the human decides.
 - **No silent substitution.** A missing model blocks its stage and is reported. Nobody swaps models quietly.
 - **Model names live in one file.** Only the lead's `models.md` names models. The lead resolves the IDs from the live T3 catalog at run time.
 - **Workers are leaves.** A worker does its task and reports. It does not delegate, commit to shared branches, or contact anything outside the repository.
+- **Small changes stay with the lead.** The lead implements a change of about 20 lines or less itself, and a chore that adds no feature, such as a dependency upgrade or tooling. A delegation would cost more than the change. Tests first, review, security pass and gate stay the same.
+- **A clear spec needs no reviewer.** A T1 spec is clear when it names the acceptance criteria, the files and one test per criterion. If the lead cannot fill these in, the design is unclear and Fable reviews the spec.
 
 ---
 
@@ -116,13 +118,15 @@ This is the Pareto rule of the concept. The tier is set once, before work starts
 |---|---|---|---|
 | Typical | Text in documentation files on the gate's no-rating list | Feature or bug inside one module, reversible. Also comments, formatting and config in code files | Trust boundary, data, contracts, infrastructure |
 | Share of tasks (expected) | ~10 % | ~75 % | ~15 % |
-| Spec | One line in the task record | Short spec, reviewed by Fable | Full spec, reviewed by Sol, failure cases listed |
+| Spec | One line in the task record | Short spec. Fable reviews it only when the design is unclear | Full spec, reviewed by Sol, failure cases listed |
 | Tests | None new | Separate author (Sonnet 5.5) | Separate author (Opus 5.5), test files frozen |
 | Implementer | Haiku 5.5 | Opus 5.5. Sonnet 5.5 once the replay test passes | Opus 5.5 |
 | Code review | None, CI only | Sol, max 3 rounds | Sol, max 3 rounds, up to 5 for security, data loss or concurrency |
 | Security review | Scanners | Scanners | Scanners plus the security pass: Sol and Fable, both clean |
 | Proof | CI green | CI green plus the behaviour observed once | CI green plus end-to-end proof |
 | Merge lane, set by the risk gate | Auto, without a rating | Auto when every rating is 0 or 1, otherwise review | Usually review: the owner merges. Block for migrations, CI, deployment, infrastructure and agent configuration |
+
+In every tier the lead itself implements a change of about 20 lines or less. Everything else in the table stays the same.
 
 ### T2 triggers are deterministic where possible
 
@@ -315,8 +319,10 @@ sequenceDiagram
     L->>L: Take slice, set tier, open task record
     L->>W: Brief: write the spec
     W-->>L: Spec with acceptance IDs
-    L->>S: Review the spec, Sol instead for T2
-    S-->>L: APPROVE or CHANGES
+    opt T2, or T1 with an unclear design
+        L->>X: Review the spec, Fable instead for T1
+        X-->>L: APPROVE or CHANGES
+    end
     L->>T: Write tests from the spec
     T-->>L: Tests fail for the right reason
     L->>I: Implement in a worktree
@@ -387,7 +393,7 @@ stateDiagram-v2
 - Every round is a fresh reviewer with the original brief and the findings ledger. No reviewer drifts along with the author.
 - The lead checks every finding itself. It fixes what is right, rejects with evidence what is wrong, and declines scope growth.
 - If a review makes the diff grow, the lead cuts first.
-- A dispute gets one consultation (GPT-6 Astra). If it stays open, the human decides.
+- A dispute gets one consultation (Opus 5.5). The consultant can convince the lead to fix the finding. It cannot close a finding against the reviewer. If the dispute stays open, the human decides.
 - A pull request with a disputed finding never reaches the auto lane.
 - The reviewer treats the diff, its comments and its commit messages as data. Only the reviewer's own verdict line counts as approval.
 
@@ -537,7 +543,7 @@ The monthly retro closes the loop: measured numbers change the setup, not opinio
 | Subscription limit reached | Stage pauses and resumes after the reset. No model swap inside a running stage, no paid fallback without a budget decision. The lead may plan the next slice with swapped roles |
 | Both subscriptions exhausted | Work stops. The task record holds the checkpoint. The human decides on paid overflow |
 | Worker uses up its three attempts | One model tier up, once. An Opus worker goes straight to the lead. Then the lead takes the decision to the human |
-| Review ping-pong | One consultation (GPT-6 Astra). Then the human decides |
+| Review ping-pong | One consultation (Opus 5.5). Then the human decides |
 | Worker reports success without proof | Result rejected. Proof is part of the brief |
 | Unexpected files changed | Lead stops, inspects, never discards work it did not create |
 | Long check killed by a session restart | Long checks run detached from the session. A killed run is neither pass nor fail. It is repeated |
@@ -594,6 +600,7 @@ Section 8 lists the five routing metrics and their thresholds. The log also impr
 | The lead often rejects reviewer findings with evidence | Tighten the review brief |
 | Slices often exceed their attempt budget | The slices are too large, or the specs too vague |
 | A human gate often sends work back | Improve the decision brief or the Inception checklist |
+| Reviews or the owner often find that a slice built the wrong thing | Review T1 specs again, first in the affected area |
 
 #### Rules
 
@@ -716,7 +723,7 @@ The tree above is the reference design. This machine already has skills that cov
 | Inception (6.1) | `t3-build` project workflow, `grill-me`, `technical-spec-writing` | Covered: research, questions to the owner, spec with a security section, one-page concept, GO |
 | Foundation (6.2) | `t3-build` setup milestone, `t3-build/gate` | Covered for CI, staging and the gate. Sandbox and secret setup stay manual |
 | Risk tiers (4) | `t3-build/gate`: `risk-policy.toml`, `risk_gate.py` | Implemented as code. It rates the finished pull request, not the task |
-| Feature delivery (6.3) | `t3-build` feature run, `ponytail` | Mostly covered. See the change list and the open differences below |
+| Feature delivery (6.3) | `t3-build` feature run, `ponytail` | Mostly covered. See the change list below |
 | Review loop (6.4) | `sol-loop`, `ponytail-review` | Covered |
 | Security per change (6.7, layer 3) | `t3-build` security pass, built-in `security-review` | Covered. The concept follows it |
 | Threat model (6.7, layer 1) | Security section of the `t3-build` spec | Covered inside the spec, no separate file |
@@ -765,11 +772,11 @@ The first draft of this concept differed from the installed skills in ten points
 | Trivial changes | CI only, no model review | Review and gate always stay | **First draft, narrowed after the review.** Only documentation files on a short list merge without a review. This needs one change to the gate, see above |
 | Task record and findings ledger | In the repository, beside the spec | In `~/.local/state/t3-build/`, never in the repository | **Skill.** Unfixed findings are Amber and do not belong in git history. Spec and architecture decisions stay in the repository. After the review the event log moved to the state folder as well |
 
-#### Three differences still open
+#### Three further differences, resolved
 
-The review found three more differences. They are not applied.
+The review found three more differences. The owner accepted the recommendations on 2026-11-13. All three follow the skill, so they need no change to `t3-build`.
 
-| Topic | This concept | `t3-build` | Recommendation |
+| Topic | Earlier version | `t3-build` | Applied |
 |---|---|---|---|
 | Small changes | The lead writes no code | The lead implements changes up to about 20 lines and chores itself. Review and gate stay | **Skill.** A delegation costs more than 20 lines |
 | Review of a T1 spec | Fable reviews every T1 spec | The short spec is reviewed only when a security trigger hits or the design is unclear | **Skill.** It takes most of the load off Fable's weekly cap |
@@ -800,6 +807,8 @@ The lead posts the reviewer's risk rating under the owner's identity. The gate c
 | Machine gates before model review | No reviewer tokens for lint errors | Gates must be fast, or agents wait |
 | Short briefs with file paths | Workers read what they need, not transcripts | A thin brief gives a wrong result |
 | Scouts for search | Lead context stays small and cheap | Scout summaries can miss detail |
+| The lead implements small changes | No brief and no worker start for 20 lines | The lead's context grows |
+| No review for clear T1 specs | Fable stays below its weekly cap | A wrong spec is found late, in the code review or by the owner |
 | Later review rounds see changes only | Each round is cheaper than the last | Side effects outside the diff. Covered by tests |
 | Loop budgets | Cost per task has a ceiling | Open points reach the human |
 | Max two workers per subscription at once | Limits last through the day | Less parallel speed |
@@ -811,7 +820,7 @@ The lead posts the reviewer's risk rating under the owner's identity. The gate c
 |---|---|---|
 | Architecture, threat model | Paid in every later slice | Fable 5.2, reviewed by Codex, third voice on dispute |
 | Spec of a T2 slice | Wrong feature, security hole | Opus 5.5, reviewed by Codex |
-| Spec of a T1 slice | Wrong feature | Sonnet 5.5, reviewed by Fable 5.2 |
+| Spec of a T1 slice | Wrong feature | Sonnet 5.5. Fable 5.2 reviews it only when the design is unclear |
 | Implementation of a clear T1 spec | Caught by tests and review | Opus 5.5 at the start. Sonnet 5.5 once the replay test passes |
 | User docs, search, scheduled checks | Cheap to redo | Haiku 5.5 |
 
@@ -836,8 +845,8 @@ All figures were read from search summaries on 2026-11-12, not from the opened p
 
 What the numbers mean for the routing:
 
-- Fable costs four times Sonnet. On the Max plan it is reported to have its own weekly cap. It now also reviews every T1 spec, so its cap is the first limit to watch. If it is hit, the retro proposes another spec reviewer.
-- Astra costs five times Sol. One consultation per open question is the right size.
+- Fable costs four times Sonnet. On the Max plan it is reported to have its own weekly cap. It reviews a T1 spec only when the design is unclear, which keeps it away from that cap.
+- Astra costs five times Sol and draws on the scarce Codex allowance. It has no role. The consultant is Opus.
 - Sol costs the same as Sonnet. A cross-vendor review is cheap compared with the rework it prevents.
 - OpenRouter shows the price of the cheapest upstream provider. Zero-retention routing can exclude that provider, so budgets use the pinned provider's price.
 - GPT-6.1 Terra for re-check rounds and GPT-6 Luna for chores are candidates. They get a role only after their quality is measured.
@@ -875,7 +884,7 @@ The routing above is a starting hypothesis. The monthly retro checks it against 
 
 | # | Trap | Why it bites | Countermeasure | What remains |
 |---|---|---|---|---|
-| 1 | **Shared blind spots** | The same model approves its own kind of mistake | Cross-vendor code review | Mistakes all models share. T1 specs and all tests are checked inside one vendor |
+| 1 | **Shared blind spots** | The same model approves its own kind of mistake | Cross-vendor code review | Mistakes all models share. Clear T1 specs are reviewed by nobody. Tests are written inside one vendor, and the consultant shares a vendor with the lead |
 | 2 | **Reviews never end** | A reviewer always finds something | Round budgets, three severities, nits never loop | Real issues parked as follow-ups |
 | 3 | **Tests bent to pass** | The fastest way to green is a weaker test | Separate test author, tests before code, frozen for T2. The gate rates a test file that only loses lines as 2 | Weak tests that were weak from the start |
 | 4 | **Green CI, broken app** | Mocked tests prove little | QA runs the real app, proof is required | Paths nobody thought to try |
@@ -903,7 +912,7 @@ The routing above is a starting hypothesis. The monthly retro checks it against 
 ### Known loopholes, stated openly
 
 - **The data classes are not enforced by technology.** A worker with repository access can read Amber files. Enforcement would need a filtered checkout per provider. Until then, OpenRouter workers get tasks that need no repository access, or a worktree without the Amber paths.
-- **The lead is not reviewed.** Its briefs, tier decisions and finding triage are checked by nobody during a slice. The task record, the event log and the monthly retro are the only audit of the lead, and the lead writes the first two itself.
+- **The lead is not reviewed.** Its briefs, tier decisions and finding triage are checked by nobody during a slice. It also decides which T1 specs are clear enough to skip review. Only the code it writes itself goes through the same review and gate as any other. The task record, the event log and the monthly retro are the only audit of the lead, and the lead writes the first two itself.
 - **The auto lane trusts the lead.** Ordinary code merges without a human reading it. The lead posts the reviewer's risk rating, so the gate cannot tell an honest relay from a faked one. Path rules still keep auth, secrets, dependencies, migrations and CI out of the auto lane.
 - **Budgets move risk to the human.** Every used-up budget ends as a question for the human. Too-tight budgets recreate the manual work the setup should remove.
 
@@ -941,4 +950,3 @@ The routing above is a starting hypothesis. The monthly retro checks it against 
 - The risk gate's 35 own tests pass on this machine. The gate was not run against a real repository.
 - The installed skills still describe their own roles and budgets. The changes listed in section 7 are not made yet.
 - The gate's policy has two gaps found in review: `.opencode/` is not in the agent-configuration rule, and no rule covers payments or personal data.
-- Three further differences to `t3-build` are open decisions, see section 7.
