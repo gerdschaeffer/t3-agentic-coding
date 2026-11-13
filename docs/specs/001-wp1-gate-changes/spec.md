@@ -29,12 +29,13 @@ and the 35 existing tests unchanged.
 
 Non-goals (out of scope for this PR):
 
-- Root `opencode.json` / `opencode.jsonc`. They steer OpenCode agents but are not under
-  `.opencode/`; today they rate regression 1 (default). **Recommendation:** follow-up PR adds
-  `"*/opencode.json", "*/opencode.jsonc"` to the block rule. Same follow-up should consider
-  other agent instruction files the rule misses (`AGENTS.override.md`, `GEMINI.md`, `.cursor/`).
-- Case-insensitive matching of agent directories (`.OpenCode/` on a case-insensitive checkout).
-  Pre-existing gap for `.claude/`, `.codex/`, `.agents/` too; see §9 OQ4.
+- Root `opencode.json` / `opencode.jsonc` and `.cursor/`. They steer agents but are not under a
+  blocked folder; today they rate regression 1 (default). **Recommendation:** follow-up PR adds
+  `"*/opencode.json", "*/opencode.jsonc", "*/.cursor/*"` to the block rule. (`AGENTS.override.md`
+  and `GEMINI.md` are in scope since security round 1, §4.6.)
+- Case-insensitive matching of the block rules themselves (`.OpenCode/` on a case-insensitive
+  checkout). Pre-existing gap for `.claude/`, `.codex/`, `.agents/` too; see §10 OQ4. This PR only
+  makes the exemption safe against it (§4.2 step 3).
 - `risk-gate.yml`, `tier.py` (WP2), CI wiring (WP9).
 - Recursive `**` patterns in `no_rating`.
 
@@ -106,10 +107,16 @@ New function in `risk_gate.py`. Same `files` dicts as `rate_files`. Behaviour, i
    empty `files` list.
 2. Empty `files`: return `False` (fail closed).
 3. PR floor not zero (`rate_files(files, policy)[0]`): return `False`. This covers
-   `small_diff_lines` and `MAX_FILES`.
+   `small_diff_lines` and `MAX_FILES`. The same must hold for the **case-folded floor**
+   `rate_files(files, policy, fold=True)[0]`, where path and rule patterns are lowercased before
+   matching (new keyword argument `fold=False`; default behaviour unchanged). Reason: on a
+   case-insensitive checkout `docs/user/claude.md` is the nested `CLAUDE.md`, and the block rules
+   match case-sensitively. Only the exemption folds; the lanes and ratings do not change.
 4. For every file `f`, return `False` unless every non-empty name in
    `(f["path"], f.get("previous"))` is **canonical** (below) and matches at least one `no_rating`
-   pattern. (No per-file floor check: step 3 already makes every file's floor zero, because the
+   pattern (case-sensitive), and unless the file reports changed lines: `f["additions"] +
+   f["deletions"] > 0`, or `f.get("previous")` is set (a pure rename reports 0 and 0). GitHub
+   reports binary files and mode-only changes as 0 and 0, which would slip past the size rule. (No per-file floor check: step 3 already makes every file's floor zero, because the
    PR floor is the maximum over its files; a second check would be dead code.)
 5. Return `True`.
 
@@ -145,6 +152,9 @@ After `files`, `trusted` and `comments` are built, before `decide()`:
 ```python
 rating = parse_rating(comments, sha, trusted)
 exempt = exempt_from_rating(files, policy)          # always: validates the policy
+marker = f"{RATING_MARK}{sha} -->"
+if any(c["login"] in trusted and c["body"].startswith(marker) for c in comments):
+    exempt = False        # a rating comment, even a malformed one, means a rating is required
 if exempt and rating is None:
     author = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "author"))
     exempt = ((author.get("author") or {}).get("login")) in trusted
@@ -159,6 +169,9 @@ lane, scores, reasons, blockers = decide(
 - The first `pr view` call (`headRefOid,isDraft`) MUST stay byte-identical; the existing fake
   matches on that exact argument.
 - Dry run uses the same code; the author lookup is read-only.
+- The marker test uses the same start-of-body rule as `parse_rating`. A malformed rating by a
+  trusted login (so `parse_rating` returns `None`) must not turn into an exemption: the owner may
+  have meant a veto. Marker comments by other logins, or for another head SHA, do not count.
 
 > Rationale for the author check (writer's addition, OQ1): `pull_request_target` runs for fork
 > PRs. Without it, anyone could open a PR that edits only `/docs/user/*.md` (phishing link,
@@ -186,6 +199,8 @@ description: `auto R0 S0 U0`.
 
 Add `"*/.opencode/*"` to `paths` of the rule `reason = "CI, deploy, gate or agent config"`
 (regression 3), next to `"*/.codex/*"`. Matches `.opencode/...` at the root and in any directory.
+Also add `"*/AGENTS.override.md"` and `"*/GEMINI.md"` (instruction files that Codex and Gemini CLI
+load from any directory; security round 1: `docs/user/AGENTS.override.md` was exempt).
 
 ### 4.7 Payments and personal-data template
 
@@ -231,10 +246,13 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 | AC11 | Malformed `no_rating` (`["/CHANGELOG.md"]`, `"x"`, `{paths = "x"}`, `{paths = [1]}`, `{paths = ["CHANGELOG.md"]}`) raises `SystemExit` from `exempt_from_rating`, also for `[]`. In `main()` only the initial pending status is written, and no comment, no `pr merge` call. Absent `no_rating` and `[no_rating]` without `paths` mean empty list. | `test_malformed_no_rating_fails_closed`, `test_main_malformed_no_rating_stays_pending` |
 | AC12 | Dry run of an exempt PR prints `auto R0 S0 U0 head <12>` then `  no rating needed: only user-documentation files`, and writes nothing; the card contains `- no rating needed: only user-documentation files`. | `test_dry_run_and_card_show_the_exemption` |
 | AC13 | Shipped list is exactly `["/CHANGELOG.md", "/docs/user/*.md"]`; `CHANGELOG.md` and `docs/user/a.md` rate zero. | `test_shipped_no_rating_list_is_minimal` |
-| AC14 | `.opencode/agent/lead.md`, `.opencode/opencode.json`, `pkg/.opencode/x.md` are `block`, with an `APPROVE` rating and without. (PLAN check 3) | `test_opencode_config_blocks` |
+| AC14 | `.opencode/agent/lead.md`, `.opencode/opencode.json`, `pkg/.opencode/x.md`, `AGENTS.override.md`, `docs/user/GEMINI.md`, `a/b/AGENTS.override.md` are `block`, with an `APPROVE` rating and without. (PLAN check 3) | `test_opencode_config_blocks` |
 | AC15 | Template is comments only (no rule in `POLICY` has reason `payments or personal data`); uncommented per §4.7 it parses to one rule, and with it `app/payments/charge.py`, `src/billing/invoice.py`, `app/pii/export.py` rate security at least 2. | `test_payments_template_is_inert_and_valid_when_uncommented` |
 | AC16 | Gate README documents the list, the `.opencode/` rule and the template (§7). | `test_readme_documents_no_rating_opencode_and_template` (asserts `[no_rating]`, `.opencode/`, `BEGIN TEMPLATE payments-personal-data` appear) |
 | AC17 | The 35 existing tests are unchanged and pass: `git diff 9c48277 -- test_risk_gate.py` shows only added lines. | full suite: `cd .agents/skills/t3-build/gate && python3 -m unittest discover -s .` |
+| AC18 | Case-folded floor: `docs/user/agents.md`, `docs/user/claude.md`, `docs/user/Claude.md`, `docs/user/agents.override.md`, `docs/user/gemini.md`, `docs/user/AGENTS.override.md`, `docs/user/GEMINI.md`, `.OpenCode/x.md` are not exempt (even with a project list that matches them). `rate_files(files, policy)` with the default `fold=False` returns exactly what it returned before (same scores and reasons for the existing fixtures). `CHANGELOG.md` and `docs/user/a.md` stay exempt. | `test_exemption_survives_case_variants_of_instruction_files` |
+| AC19 | In `main()`, an exempt PR with a rating-marker comment for the head SHA by a trusted login is not exempt, whatever its body: well-formed APPROVE (rating path as today), CHANGES, malformed (`regression: 4`, `regression: n/a`, missing `user:`): lane `review` or `auto` only through a valid APPROVE rating, never through the exemption; no author lookup is needed. A marker comment by another login, or for another SHA, does not disable the exemption. | `test_main_malformed_rating_comment_disables_the_exemption` |
+| AC20 | A file with 0 additions, 0 deletions and no `previous` (binary blob, mode change, empty file) on the list is not exempt, alone or among others. A pure rename (0/0 with `previous`) with both names on the list is exempt. 2999 such files are not exempt. | `test_zero_change_files_are_not_exempt` |
 
 ## 6. Failure cases
 
@@ -244,7 +262,7 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 | Author lookup fails (API error) | `SystemExit` from `gh`; status stays `pending` |
 | Author is a deleted user (`author: null`) | not exempt; review lane |
 | Tree truncated | every file gets `link`; floor regression 2; not exempt |
-| Rating present but malformed | `parse_rating` returns `None`; exemption may apply (same as no rating) |
+| Rating present but malformed | `parse_rating` returns `None`; not exempt (§4.4 marker test): review lane |
 | Rating for an older commit | ignored as today; exemption may apply |
 
 ## 7. README changes (same PR)
@@ -289,8 +307,16 @@ than the trusted login's are ignored.
 | Malformed policy creates an accidental exemption | `SystemExit`, stays pending (AC11) |
 | Caller passes `exempt=True` wrongly | `decide` re-checks the zero floor (AC9) |
 
+| Instruction file inside the exempt folder (`docs/user/AGENTS.override.md`, `GEMINI.md`, `claude.md` on a case-insensitive checkout) | block rule additions (§4.6); case-folded floor (§4.2 step 3, AC18) |
+| Malformed rating by the trusted login ignored, exemption applies | any trusted marker comment for the head SHA disables the exemption (§4.4, AC19) |
+| Binary or mode-only change reported as 0/0 lines in an exempt path | a file with 0/0 and no `previous` is not exempt (§4.2 step 4, AC20) |
+
 **Residual risk.** A PR authored by the rater identity that edits only exempt docs merges with no
-model review. That is the T0 design and lies inside the accepted relay risk (README). Content of
+model review. Open to the human (security round 1, S3 low): the check binds to who opened the PR,
+not to who wrote the head commit, so a collaborator with push rights to a PR branch the rater
+opened can add a docs-only commit that merges unseen; the README says rater PR branches must not
+be shared. Also: the instruction-file list is a deny list; an agent instruction filename the
+policy does not know yet, placed in an exempt folder, merges without review. That is the T0 design and lies inside the accepted relay risk (README). Content of
 user docs (wrong but harmless text) is not checked by the gate. Newline-bearing filenames in
 non-exempt reasons are printed into the dry run as today (pre-existing, OQ5).
 
@@ -313,10 +339,10 @@ non-exempt reasons are printed into the dry run as today (pre-existing, OQ5).
   (§4.1, AC11 last case) stay. Both close abuse cases in §8.
 - **OQ2 (decided):** `/README.md` stays off the default list; adding it would need a change to
   `test_rater_from_policy_counts_after_a_move_to_an_org`. Projects opt in.
-- **OQ3:** follow-up PR for root `opencode.json`/`opencode.jsonc`, `AGENTS.override.md`,
-  `GEMINI.md`, `.cursor/` in the block rule. Recommendation: yes, next gate PR.
-- **OQ4:** case-insensitive matching for agent-config directories. Recommendation: separate PR,
-  all directories at once.
+- **OQ3:** follow-up PR for root `opencode.json`/`opencode.jsonc` and `.cursor/` in the block
+  rule (`AGENTS.override.md`, `GEMINI.md` moved into this PR). Recommendation: yes, next gate PR.
+- **OQ4:** case-insensitive matching of the block rules for every path. Recommendation: separate
+  PR, all rules at once (the exemption is already safe, §4.2 step 3).
 - **OQ5:** sanitise control characters in printed reasons (dry run is read by the leader).
   Pre-existing; separate PR.
 
