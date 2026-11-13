@@ -1,0 +1,46 @@
+# Copy to .github/workflows/risk-gate.yml. Script and policy go to .github/risk-gate/.
+name: risk-gate
+
+on:
+  # pull_request_target runs THIS file from the base branch, so a PR cannot edit
+  # the gate that judges it. Never check out or run the PR's code in this job.
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  issue_comment:
+    # edited and deleted only re-evaluate; withdrawing is a new rating with verdict CHANGES.
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  gate:
+    # Comments only re-run the gate when they are (or were, before an edit) a risk
+    # rating by the repo owner. The gate's own cards never start with that marker.
+    # Org repo: replace github.repository_owner with 'your-login', the rater in the policy.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+       github.event.comment.user.login == github.repository_owner &&
+       (startsWith(github.event.comment.body, '<!-- risk-rating sha=') ||
+        startsWith(github.event.changes.body.from || '', '<!-- risk-rating sha=')))
+    # Concurrency on the filtered job: unrelated comments can never cancel a running gate.
+    concurrency:
+      group: risk-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4   # base branch only
+        with:
+          persist-credentials: false
+      - name: Rate and route the PR
+        run: python3 .github/risk-gate/risk_gate.py
+        env:
+          # A merge done with the default GITHUB_TOKEN does not start other workflows,
+          # so staging would never deploy. Use a fine-grained token for this repo only
+          # (contents, pull requests, commit statuses: read/write).
+          GH_TOKEN: ${{ secrets.RISK_GATE_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}

@@ -1,0 +1,74 @@
+# Risk policy for the risk gate. Every change under .github/ (this file included)
+# is rated 3 = block, so a PR can never loosen its own gate.
+#
+# Patterns use fnmatch: * also crosses "/". "*/name" means name in any directory,
+# root included. A pattern starting with "/" is anchored at the repo root, and its *
+# stays within one directory. A file gets the highest level of every rule it matches;
+# a file no rule matches gets [default]. Overly broad patterns only make the gate
+# stricter. A symlink or submodule in the PR is always rated at least 2.
+
+mode = "shadow"   # "shadow": rate and comment only. "enforce": also auto-merge the auto lane.
+live = false      # true once production CD exists: user impact then counts.
+# Only the repo owner may post ratings. An org owner is not a user login, so org repos set
+# rater to the one user login whose ratings count, and use it in risk-gate.yml too.
+# rater = "your-login"
+
+[limits]
+small_diff_lines = 200   # more changed lines (added + removed): regression at least 2
+
+[merge]
+# method = "squash"            # "squash" (default), "merge" or "rebase"; follow the repo's rule
+# hours = [8, 20]              # auto-merge only from 08:00 to 19:59
+# timezone = "Europe/Berlin"
+
+[default]                      # ordinary code
+regression = 1
+
+[[rule]]
+reason = "docs"
+paths = ["*.md", "*/docs/*", "*/LICENSE"]
+regression = 0
+
+[[rule]]
+reason = "tests"
+paths = ["*/tests/*", "*/test/*", "*/test_*", "*_test.*", "*.test.*", "*.spec.*"]
+regression = 0
+deletions_only = 2             # a test file that only loses lines
+
+[[rule]]
+reason = "dependency change"
+paths = ["*/package.json", "*/package-lock.json", "*/pnpm-lock.yaml", "*/yarn.lock",
+         "*/requirements*.txt", "*/pyproject.toml", "*/poetry.lock", "*/uv.lock",
+         "*/go.mod", "*/go.sum", "*/Cargo.toml", "*/Cargo.lock", "*/Gemfile*", "*/composer.*"]
+regression = 2
+security = 2
+
+[[rule]]
+reason = "auth, permissions, sessions or secrets"
+paths = ["*auth*", "*permission*", "*session*", "*password*", "*secret*", "*token*",
+         "*crypt*", "*/security/*", "*middleware*"]
+regression = 1
+security = 2
+
+[[rule]]
+reason = "schema or data migration"
+paths = ["*/migrations/*", "*/migrate/*", "*.sql"]
+regression = 3
+
+[[rule]]
+reason = "repo root: tool config and modules that shadow imports"
+# Test runners start from the root, so a new root module or tool config (unittest.py,
+# pytest.ini, conftest.py, jest.config.js, .mocharc) can turn a check green without
+# running it. Adapt the list to the repo's stack.
+paths = ["/*.py", "/*.pyc", "/*.so", "/*.pth", "/*.ini", "/*.cfg", "/*.toml", "/.*rc",
+         "/.python-version", "/*/__init__.*", "/*.dist-info/*", "/*.egg-info/*",
+         "/*.config.*", "/.*rc.*"]
+regression = 2
+
+[[rule]]
+reason = "CI, deploy, gate or agent config"
+# Agent config and instruction files steer every session and can hold merge rules.
+paths = [".github/*", "*/Dockerfile*", "*/docker-compose*", "*/deploy/*", "*/infra/*", "*.tf",
+         "*/AGENTS.md", "*/CLAUDE.md", "*/CLAUDE.local.md", "*/.claude/*", "*/.codex/*",
+         "*/.agents/*", "*/.mcp.json"]
+regression = 3
