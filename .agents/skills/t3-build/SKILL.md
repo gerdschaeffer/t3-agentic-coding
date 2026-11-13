@@ -147,7 +147,7 @@ The core loop. A project runs it once per milestone (section 5).
    said "just do it" (still show it). T1: no spec review unless the design is
    unclear (`spec-reviewer`). T2: `reviewer` (Sol) reviews it. In a project, the
    concept's GO replaces this go.
-5. **Tests first.** `test-author` writes failing tests per AC at the lowest
+5. **Tests first** (not for T0). `test-author` (T1) or `test-author-t2` (T2) writes failing tests per AC at the lowest
    level that proves it; confirm the intended failure (not an import error or a
    missing service). Record pre-existing failures, and why when existing tests
    already cover an AC.
@@ -217,8 +217,11 @@ Same for both workflows. Without a gate in the repo: commit, push and PR only on
 the user's request, and the user merges.
 
 1. Commit on the feature branch, push, open the PR. Body: spec link, ACs with
-   evidence, Sol's actual verdict line from sol-loop, security pass result.
-2. Post the **risk rating** as a PR comment, format in
+   evidence, Sol's actual verdict line from sol-loop, security pass result. A T0 PR
+   has none of these: body is the one-line task record and the CI result, and
+   step 2 is skipped. The gate merges it without a rating (see
+   [references/risk-tiers.md](references/risk-tiers.md)); CI and the gate still run.
+2. Post the **risk rating** as a PR comment (not for T0), format in
    [gate/README.md](gate/README.md), for the exact head SHA: Sol's last verdict,
    Sol's three ratings (ask for them in the final review round, scale from the
    README), security pass, disputed ids. Copy Sol's values; never lower or edit
