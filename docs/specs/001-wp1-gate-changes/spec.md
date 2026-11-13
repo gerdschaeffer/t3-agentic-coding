@@ -115,14 +115,17 @@ New function in `risk_gate.py`. Same `files` dicts as `rate_files`. Behaviour, i
 4. For every file `f`, return `False` unless every non-empty name in
    `(f["path"], f.get("previous"))` is **canonical** (below) and matches at least one `no_rating`
    pattern (case-sensitive), and unless the file reports changed lines: `f["additions"] +
-   f["deletions"] > 0`, or `f.get("previous")` is set (a pure rename reports 0 and 0). GitHub
-   reports binary files and mode-only changes as 0 and 0, which would slip past the size rule. (No per-file floor check: step 3 already makes every file's floor zero, because the
+   f["deletions"] > 0`. No carve-out for renames: GitHub reports binary files, mode-only changes
+   and a renamed binary with new content as 0 and 0, which would slip past the size rule, so a
+   0/0 rename needs a rating (security round 2). (No per-file floor check: step 3 already makes every file's floor zero, because the
    PR floor is the maximum over its files; a second check would be dead code.)
 5. Return `True`.
 
 A name is **canonical** when all hold: non-empty; does not start with `/`;
 `str(PurePosixPath(name)) == name` (rejects `./x`, `a//b`, `a/./b`, trailing `/`); no `..`
-segment; no `\`; `name.isprintable()` (rejects newline, control and Unicode format characters
+segment; no `\`; `name.isascii()` (security round 2: Unicode names such as `AGENTſ.md`, U+017F,
+fold to `AGENTS.md` on case-folding filesystems but not under `str.lower`; a non-ASCII doc name
+needs a rating); `name.isprintable()` (rejects newline, control and Unicode format characters
 such as U+202E). Matching is case-sensitive and on exact code points (no normalisation).
 
 The function is pure apart from the `SystemExit`; it performs no I/O.
@@ -200,7 +203,10 @@ description: `auto R0 S0 U0`.
 Add `"*/.opencode/*"` to `paths` of the rule `reason = "CI, deploy, gate or agent config"`
 (regression 3), next to `"*/.codex/*"`. Matches `.opencode/...` at the root and in any directory.
 Also add `"*/AGENTS.override.md"` and `"*/GEMINI.md"` (instruction files that Codex and Gemini CLI
-load from any directory; security round 1: `docs/user/AGENTS.override.md` was exempt).
+load from any directory; security round 1: `docs/user/AGENTS.override.md` was exempt), and, from
+security round 2, the other default instruction filenames of agent tools that load them from
+subdirectories: `"*/AGENT.md"`, `"*/WARP.md"`, `"*/CRUSH.md"`, `"*/CRUSH.local.md"`,
+`"*/QWEN.md"`. The list is a deny list and cannot be complete (§8 residual risk).
 
 ### 4.7 Payments and personal-data template
 
@@ -252,7 +258,7 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 | AC17 | The 35 existing tests are unchanged and pass: `git diff 9c48277 -- test_risk_gate.py` shows only added lines. | full suite: `cd .agents/skills/t3-build/gate && python3 -m unittest discover -s .` |
 | AC18 | Case-folded floor: `docs/user/agents.md`, `docs/user/claude.md`, `docs/user/Claude.md`, `docs/user/agents.override.md`, `docs/user/gemini.md`, `docs/user/AGENTS.override.md`, `docs/user/GEMINI.md`, `.OpenCode/x.md` are not exempt (even with a project list that matches them). `rate_files(files, policy)` with the default `fold=False` returns exactly what it returned before (same scores and reasons for the existing fixtures). `CHANGELOG.md` and `docs/user/a.md` stay exempt. | `test_exemption_survives_case_variants_of_instruction_files` |
 | AC19 | In `main()`, an exempt PR with a rating-marker comment for the head SHA by a trusted login is not exempt, whatever its body: well-formed APPROVE (rating path as today), CHANGES, malformed (`regression: 4`, `regression: n/a`, missing `user:`): lane `review` or `auto` only through a valid APPROVE rating, never through the exemption; no author lookup is needed. A marker comment by another login, or for another SHA, does not disable the exemption. | `test_main_malformed_rating_comment_disables_the_exemption` |
-| AC20 | A file with 0 additions, 0 deletions and no `previous` (binary blob, mode change, empty file) on the list is not exempt, alone or among others. A pure rename (0/0 with `previous`) with both names on the list is exempt. 2999 such files are not exempt. | `test_zero_change_files_are_not_exempt` |
+| AC20 | A file with 0 additions, 0 deletions and no `previous` (binary blob, mode change, empty file) on the list is not exempt, alone or among others. A 0/0 rename (with `previous`) is not exempt either, even with both names on the list. 2999 such files are not exempt. A rename that reports changed lines with both names on the list is exempt. | `test_zero_change_files_are_not_exempt` |
 
 ## 6. Failure cases
 
@@ -309,16 +315,28 @@ than the trusted login's are ignored.
 
 | Instruction file inside the exempt folder (`docs/user/AGENTS.override.md`, `GEMINI.md`, `claude.md` on a case-insensitive checkout) | block rule additions (§4.6); case-folded floor (§4.2 step 3, AC18) |
 | Malformed rating by the trusted login ignored, exemption applies | any trusted marker comment for the head SHA disables the exemption (§4.4, AC19) |
-| Binary or mode-only change reported as 0/0 lines in an exempt path | a file with 0/0 and no `previous` is not exempt (§4.2 step 4, AC20) |
+| Binary or mode-only change, or a renamed binary, reported as 0/0 lines in an exempt path | a file with 0/0 is not exempt (§4.2 step 4, AC20) |
+| Non-ASCII name that folds to an instruction file (`AGENTſ.md`, U+017F) | `canonical` requires `isascii` (§4.2, AC7, AC18) |
 
-**Residual risk.** A PR authored by the rater identity that edits only exempt docs merges with no
-model review. Open to the human (security round 1, S3 low): the check binds to who opened the PR,
-not to who wrote the head commit, so a collaborator with push rights to a PR branch the rater
-opened can add a docs-only commit that merges unseen; the README says rater PR branches must not
-be shared. Also: the instruction-file list is a deny list; an agent instruction filename the
-policy does not know yet, placed in an exempt folder, merges without review. That is the T0 design and lies inside the accepted relay risk (README). Content of
-user docs (wrong but harmless text) is not checked by the gate. Newline-bearing filenames in
-non-exempt reasons are printed into the dry run as today (pre-existing, OQ5).
+**Residual risk (open to the human, accepted only when the human merges knowing it).**
+
+1. A PR authored by the rater identity that edits only exempt docs merges with no model review.
+   That is the T0 design and lies inside the accepted relay risk (README). Content of user docs
+   (wrong but harmless text) is not checked.
+2. (S3, low) The check binds to who opened the PR, not who wrote the head commit: a collaborator
+   with push rights to a PR branch the rater opened can add a docs-only commit that merges unseen.
+   README: rater PR branches must not be shared.
+3. The instruction-file list is a deny list. Names that load as agent instructions and are not
+   blocked (known: `CONTEXT.md`, `IFLOW.md`, `CODEBUDDY.md`; any `*.md` that a tool config, such as
+   `project_doc_fallback_filenames`, `context.fileName`, `opencode.json` `instructions` or an
+   `@import`, names) can sit in an exempt folder and merge without review. Keeping the `no_rating`
+   list narrow and never naming exempt files in an agent config limits it.
+4. A veto comment by the rater that misses the exact marker line (full head SHA, character 0) does
+   not stop an exempt PR, and the workflow does not re-run on it: convert the PR to draft or close it.
+5. Case folding lowercases rule patterns: a character range that spans cases (`[A-_]`) is not
+   folded correctly (project-authored patterns only).
+6. Newline-bearing filenames in non-exempt reasons are printed into the dry run as today
+   (pre-existing, OQ5).
 
 ## 9. Alternatives considered
 
