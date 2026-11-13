@@ -108,7 +108,7 @@ Call the skill with `/t3-build` in a Claude thread or `$t3-build` in a Codex thr
 /t3-build project: build a habit tracker with email login
 ```
 
-All kinds run the same gates: review, security pass, risk gate, and a human merge. `fix:`, `refactor:` and `docs:` are kinds of the `feature` workflow, not separate skills. The skill text that defines them is proposed in `staging/t3-build-kinds.patch`. A human applies it with `git apply staging/t3-build-kinds.patch`, because skills are guardrail files. Until then the lead only knows `feature` and `project`, and the table works as a plain-language hint.
+All kinds run the same gates: review, security pass, risk gate, and a human merge. `fix:`, `refactor:` and `docs:` are kinds of the `feature` workflow, not separate skills. The skill text that defines them is in `.agents/skills/t3-build/SKILL.md`.
 
 ## Commit messages
 
