@@ -787,7 +787,7 @@ The review found three more differences. The owner accepted the recommendations 
 - `~/.agents` points to the dotfiles folder. `~/.agents/skills` is the canonical folder. Codex and OpenCode read it directly.
 - `~/.claude/skills` holds one link per skill into `~/.agents/skills`. Claude Code loads skills through these links.
 - A skill without a link is invisible to Claude Code. `t3-build` and `t3-coding-ninox` are in that state. A link for the whole folder would prevent it, but that is untested.
-- The risk gate is copied into each repository under `.github/risk-gate/`. Its policy rates every change to `.github/`, deployment files and agent configuration (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `.codex/`, `.agents/`) as "block". A pull request cannot loosen its own gate. This is the concept's rule "guardrail files are human-owned", already enforced by code. `.opencode/` is missing from that rule and must be added.
+- The risk gate is copied into each repository under `.github/risk-gate/`. Its policy rates every change to `.github/`, deployment files and agent configuration (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `.codex/`, `.agents/`) as "block". A pull request cannot loosen its own gate. This is the concept's rule "guardrail files are human-owned", already enforced by code. `.opencode/` is in that rule too (WP1).
 
 #### A weak point the gate already documents
 
@@ -949,4 +949,4 @@ The routing above is a starting hypothesis. The monthly retro checks it against 
 - A link for the whole skills folder and OpenCode's duplicate skill listing are untested. The pilot slice checks both.
 - The risk gate's 35 own tests pass on this machine. The gate was not run against a real repository.
 - The installed skills still describe their own roles and budgets. The changes listed in section 7 are not made yet.
-- The gate's policy has two gaps found in review: `.opencode/` is not in the agent-configuration rule, and no rule covers payments or personal data.
+- The gate's policy still misses root `opencode.json`, `AGENTS.override.md`, `GEMINI.md` and `.cursor/`, and its agent-configuration patterns are case-sensitive (follow-ups after WP1, see `docs/specs/001-wp1-gate-changes/spec.md`). Payments and personal data are a commented template, filled per project.
