@@ -131,7 +131,9 @@ The core loop. A project runs it once per milestone (section 5).
    and `dependency`, `interface`, `schema` when the task adds a package or major
    upgrade, changes a public interface or a data schema. Line 1 is the tier:
    - `human`: a guardrail file. Work on a branch and open the PR; the human reviews
-     and merges. Stop for the user if the work cannot stay in a proposal.
+     and merges. Stop for the user if the work cannot stay in a proposal. The
+     process depth is the tier the plan or the user names, else T2; that is the
+     tier you log (the log has no `human`).
    - `T2`: full process (spec reviewed by `reviewer`, `test-author-t2`, security
      pass). `T1`: the standard process below.
    - `T0`: **T0 path.** One line in the task record, `implementer-t0` writes it, no

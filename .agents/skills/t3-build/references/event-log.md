@@ -8,7 +8,8 @@ echo '{"slice":"wp4","tier":"T2","stage":"code-review","role":"reviewer","model"
   | python3 <skill dir>/scripts/log_event.py --repo <repo>
 ```
 
-`ts` is added by the script. Required: `slice`, `tier`, `stage`, `role`, `model`, `effort`.
+`ts` is added by the script. `tier` is T0, T1 or T2 only: for a `human` task (guardrail
+file) log the process tier the plan or the user named, else T2. Required: `slice`, `tier`, `stage`, `role`, `model`, `effort`.
 Optional: `attempt`, `round`, `verdict`, `findings`, `outcome`, `duration` (seconds),
 `tier_raised`, `escalation`, `quota_pause`. Rules per field: `scripts/log_event.py` and
 `docs/specs/003-wp3-event-log/spec.md`.
