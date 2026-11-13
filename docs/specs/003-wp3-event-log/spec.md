@@ -32,7 +32,9 @@ State root, first that is set: `--state-dir`, env `T3_BUILD_STATE`, `~/.local/st
 Log path: `<root>/<repo>/events.jsonl`.
 
 Module API for tests: `validate(event) -> list[str]` (problems, empty when valid) and
-`append(root, repo, event)`.
+`append(root, repo, event)`: `root` is a `str` or `Path`; it validates `repo` and `event` and raises
+`ValueError` (message: the problems) before touching the filesystem; it returns `None`. A missing
+`--repo` exits 2 (argparse). Creating the directories tolerates a parallel first writer.
 
 ## 3. Event fields
 
@@ -81,7 +83,7 @@ Every CLI test uses a temp `--state-dir` or `T3_BUILD_STATE`; none touches `~`.
 |---|---|
 | AC1 | A valid event appends exactly one line: a JSON object with the given fields in order and `ts` last (matches the format); two calls give two lines; exit 0, stdout empty. A full event with every optional field is accepted. |
 | AC2 | Each missing required field exits 2, stderr names the field, state dir not created (or unchanged when it existed with a log). |
-| AC3 | Rejected, exit 2, nothing written, one case each: `tier` `T3`; unknown `stage`; `attempt` 0, `"1"`, `true`, 1.5; `round` 0; negative, `NaN`, `Infinity` and bool `duration`; `findings` with a missing, extra or negative key; unknown `verdict`, `outcome`, `escalation`; non-bool `tier_raised`; unknown field; supplied `ts` or `date`; `model`, `effort`, `role`, `slice` with a space, newline, `/` or non-ASCII character. |
+| AC3 | Rejected, exit 2, nothing written, one case each: `tier` `T3`; unknown `stage`; `attempt` 0, `"1"`, `true`, 1.5; `round` 0; negative, `NaN`, `Infinity` and bool `duration`; `findings` with a missing, extra or negative key; unknown `verdict`, `outcome`, `escalation`; non-bool `tier_raised`; unknown field; supplied `ts` or `date`; `model`, `effort`, `role`, `slice` with a space, newline or non-ASCII character; `effort`, `role`, `slice` with `/` (`model` may contain `/`). |
 | AC4 | `--repo` `..`, `a/b`, `.hidden`, empty, a 65-character name and a name with a newline exit 2 and create nothing. |
 | AC5 | Input that is not JSON, not an object, empty, or too large (line over 4096 bytes) exits 2, nothing written. Several problems in one event are all listed on stderr. |
 | AC6 | After a write the state root and the repo directory are 0700 and the log is 0600; a pre-existing 0755 repo directory becomes 0700. |
