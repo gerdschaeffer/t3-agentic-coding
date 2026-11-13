@@ -41,8 +41,6 @@ Non-goals (out of scope for this PR):
 ## 3. Terminology
 
 - **Floor** of a file list: `rate_files(files, policy)[0]`, the three-dimension score dict.
-- **Own floor** of one file `f`: `rate_files([f], policy)[0]`. It includes the rename's previous
-  path, the symlink/submodule flag (`f["link"]`) and that file's own line count.
 - **Zero floor**: all three of `regression`, `security`, `user` are 0 (user counts here even when
   `live = false`).
 - **Exempt PR**: a PR for which `exempt_from_rating()` returns `True` (§4.2).
@@ -74,7 +72,7 @@ keeps `*` inside one directory, so `/docs/user/*.md` matches `docs/user/a.md` bu
 
 > Rationale for anchoring: an unanchored pattern goes through `fnmatch`, whose `*` crosses `/`.
 > `*.md` would cover specs, runbooks and agent definitions that rate 0, exactly the loophole of
-> CONCEPT failure mode 23. The own-floor check (§4.2) catches only files with a non-zero floor.
+> CONCEPT failure mode 23. The zero-floor check (§4.2 step 3) catches only files with a non-zero floor.
 
 `**` is not recursive in `PurePosixPath.match` (Python 3.12 and 3.13 treat it like `*`, checked:
 `/docs/user/**/*.md` matches `docs/user/a/b.md` but not `docs/user/x/y/z.md`). It fails narrow,
@@ -109,10 +107,10 @@ New function in `risk_gate.py`. Same `files` dicts as `rate_files`. Behaviour, i
 2. Empty `files`: return `False` (fail closed).
 3. PR floor not zero (`rate_files(files, policy)[0]`): return `False`. This covers
    `small_diff_lines` and `MAX_FILES`.
-4. For every file `f`, return `False` unless all hold:
-   - every non-empty name in `(f["path"], f.get("previous"))` is **canonical** (below) and
-     matches at least one `no_rating` pattern;
-   - the own floor `rate_files([f], policy)[0]` is zero.
+4. For every file `f`, return `False` unless every non-empty name in
+   `(f["path"], f.get("previous"))` is **canonical** (below) and matches at least one `no_rating`
+   pattern. (No per-file floor check: step 3 already makes every file's floor zero, because the
+   PR floor is the maximum over its files; a second check would be dead code.)
 5. Return `True`.
 
 A name is **canonical** when all hold: non-empty; does not start with `/`;
@@ -223,7 +221,7 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 | AC1 | PR of only `no_rating` files, no rating, author trusted: lane `auto`, no "no trusted risk rating" blocker, `NO_RATING_REASON` in reasons. Enforce: last status `success` with `auto`, `--auto` merge on the head SHA. (PLAN check 1) | `test_no_rating_files_without_rating_are_auto`, `test_main_no_rating_pr_auto_merges` |
 | AC2 | No rating and any of `docs/specs/x/spec.md`, `docs/runbooks/x.md`, `tests/test_x.py`, `README.md`, `docs/user/sub/x.md`, `.claude/agents/x.md`: not exempt, lane not `auto` (`review`, or `block` for agent config). (PLAN check 2) | `test_specs_runbooks_tests_and_agent_files_need_a_rating` |
 | AC3 | Every file must qualify: `CHANGELOG.md` + `app/views.py` not exempt; `[]` not exempt. | `test_mixed_or_empty_pr_needs_a_rating` |
-| AC4 | Own floor must be zero: with `paths = ["/*.md", "/docs/user/*.md"]`, `AGENTS.md`, `docs/user/session-timeout.md` (security 2), `docs/user/CLAUDE.md` (block) and a `CHANGELOG.md` with `link` set are each not exempt. A file whose only non-zero score is `user` (test policy: a rule gives an allowed docs path `user = 1`, regression and security 0, `live = false`) is not exempt, and `decide(..., exempt=True)` on it keeps the missing-rating blocker. | `test_exempt_file_needs_floor_zero_on_every_dimension` |
+| AC4 | Every file's floor must be zero (enforced by the PR floor, §4.2 step 3): with `paths = ["/*.md", "/docs/user/*.md"]`, `AGENTS.md`, `docs/user/session-timeout.md` (security 2), `docs/user/CLAUDE.md` (block) and a `CHANGELOG.md` with `link` set are each not exempt. A file whose only non-zero score is `user` (test policy: a rule gives an allowed docs path `user = 1`, regression and security 0, `live = false`) is not exempt, and `decide(..., exempt=True)` on it keeps the missing-rating blocker. | `test_exempt_file_needs_floor_zero_on_every_dimension` |
 | AC5 | PR floor must be zero: two `docs/user/*.md` files each at most `small_diff_lines` but together above it are not exempt (`review`); `MAX_FILES` `docs/user/*.md` files are `block`. | `test_pr_level_floor_cancels_exemption` |
 | AC6 | Renames need both names on the list: `src/x.py` to `CHANGELOG.md` and `CHANGELOG.md` to `src/x.py` not exempt; `docs/user/a.md` to `CHANGELOG.md` exempt. Both names rate 0 but only one is on the list (so the list check, not the floor, must reject): `docs/specs/x/spec.md` to `CHANGELOG.md` and `CHANGELOG.md` to `docs/specs/x/spec.md` are not exempt. | `test_rename_needs_both_names_on_the_list` |
 | AC7 | Non-canonical or lookalike names are never exempt: `./CHANGELOG.md`, `CHANGELOG.md/`, `docs//user/a.md`, `docs/user/a\nb.md`, `docs/user/‮x.md`, `changelog.md`, `CHANGELOG.md` with Cyrillic `С`. | `test_non_canonical_or_lookalike_paths_are_not_exempt` |
@@ -245,7 +243,7 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 | `no_rating` malformed | `SystemExit` before `decide`; status stays `pending`; no card, no merge call; dry run prints the error and no lane |
 | Author lookup fails (API error) | `SystemExit` from `gh`; status stays `pending` |
 | Author is a deleted user (`author: null`) | not exempt; review lane |
-| Tree truncated | every file gets `link`; own floor regression 2; not exempt |
+| Tree truncated | every file gets `link`; floor regression 2; not exempt |
 | Rating present but malformed | `parse_rating` returns `None`; exemption may apply (same as no rating) |
 | Rating for an older commit | ignored as today; exemption may apply |
 
@@ -262,6 +260,10 @@ need a fake `gh` that also answers `pr view --json author` (new helper or subcla
 - **"Setup per repository"**: new step "fill the payments and personal-data template from the
   threat model and uncomment it", and note that agent config under `.opencode/` blocks like
   `.claude/` and `.codex/`.
+  Also one sentence: the tests `test_shipped_no_rating_list_is_minimal` and
+  `test_payments_template_is_inert_and_valid_when_uncommented` check the policy as shipped; a
+  project that customises the policy adapts them. The README test is skipped when `README.md` is
+  not next to the tests (README is not copied in setup step 1).
 
 ## 8. Security considerations
 
@@ -276,12 +278,12 @@ than the trusted login's are ignored.
 | Abuse case | Mitigation |
 |---|---|
 | Fork PR edits only user docs to plant a phishing link or install command | author must be a trusted login (§4.4, AC10) |
-| Broad pattern like `*.md` exempts specs, runbooks, agent Markdown | patterns must be anchored (§4.1, AC11); own floor zero (AC4) |
+| Broad pattern like `*.md` exempts specs, runbooks, agent Markdown | patterns must be anchored (§4.1, AC11); zero floor (AC4) |
 | Code file looks like docs by case (`Changelog.MD`) | case-sensitive exact match: not exempt (AC7) |
 | Trailing slash, `./`, `//`, `..` | canonical check (AC7); Git also rejects most of these |
 | Rename exempt to code, or code to exempt | both names must match and rate 0 (AC6) |
-| Symlink or submodule named `CHANGELOG.md` | `link` gives own floor 2 (AC4); truncated tree flags all files |
-| Docs file matching both `no_rating` and a block or security rule (`docs/user/CLAUDE.md`, `docs/user/session-timeout.md`) | own floor zero required (AC4); block rule still blocks |
+| Symlink or submodule named `CHANGELOG.md` | `link` gives floor 2 (AC4); truncated tree flags all files |
+| Docs file matching both `no_rating` and a block or security rule (`docs/user/CLAUDE.md`, `docs/user/session-timeout.md`) | zero floor required (AC4); block rule still blocks |
 | Huge diff or 3000+ files of docs | PR floor zero required (AC5) |
 | Unicode lookalike (`СHANGELOG.md`, U+202E) | exact code-point match fails; `isprintable` rejects format characters (AC7) |
 | Malformed policy creates an accidental exemption | `SystemExit`, stays pending (AC11) |
@@ -297,8 +299,8 @@ non-exempt reasons are printed into the dry run as today (pre-existing, OQ5).
 - **Widen the `docs` rule / reuse level 0**: rejected, CONCEPT failure mode 23.
 - **Top-level `no_rating = [...]` array**: TOML forces it above the first table; appended at the
   end it silently becomes a key of the last `[[rule]]`. A table can go anywhere.
-- **New per-file floor function**: rejected; `rate_files([f], policy)` already gives it,
-  including renames and links.
+- **Per-file floor check on top of the PR floor**: rejected as dead code; the PR floor is the
+  maximum of the file floors.
 - **Compute the exemption inside `decide`**: `decide` has no file list; would change its
   positional signature.
 - **Require `isCrossRepository == false` instead of the author**: lets any collaborator with write

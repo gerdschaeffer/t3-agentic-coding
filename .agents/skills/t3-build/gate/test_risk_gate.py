@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import tomllib
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -283,6 +284,426 @@ class Main(unittest.TestCase):
     def test_shadow_never_merges(self):
         _, _, merges = self.run_main(["README.md"], [rating()], mode="shadow")
         self.assertFalse(any("--auto" in m for m in merges))
+
+
+# WP1 (docs/specs/001-wp1-gate-changes/spec.md): no-rating list, .opencode/, payments template.
+
+NO_RATING = {"paths": ["/CHANGELOG.md", "/docs/user/*.md"]}
+NR = {**POLICY, "no_rating": NO_RATING}  # the shipped list, set here so units don't depend on it
+MISSING = "no trusted risk rating for the head commit"
+REASON = "no rating needed: only user-documentation files"  # spec 4.3, normative
+ZERO = {"regression": 0, "security": 0, "user": 0}
+FIRST_VIEW = ("pr", "view", "7", "--repo", "owner/repo", "--json", "headRefOid,isDraft")
+LOOKUP_FAILS = object()
+
+
+def nr_lane(files, comments=(), policy=NR, draft=False):
+    r = g.parse_rating(list(comments), SHA, ["owner"])
+    exempt = g.exempt_from_rating(files, policy)
+    return g.decide(*g.rate_files(files, policy), r, policy, draft, exempt=exempt)
+
+
+def moved(path, previous):
+    return {**f(path), "previous": previous}
+
+
+def run_gate(files, comments=(), author="owner", mode="enforce", env=None, policy=None):
+    """main() against a fake gh that also answers `pr view --json author` (spec 4.4).
+
+    author: a login, None for a deleted user (`"author": null`), or LOOKUP_FAILS.
+    """
+    calls, cards, comments = [], [], list(comments)
+
+    def fake_gh(*args, check=True):
+        calls.append(args)
+        if args[:2] == ("pr", "view") and any("headRefOid" in a for a in args):
+            return json.dumps({"headRefOid": SHA, "isDraft": False})
+        if args[:2] == ("pr", "view") and "author" in args:
+            if author is LOOKUP_FAILS:
+                raise SystemExit("gh pr view failed: HTTP 502")
+            return json.dumps({"author": None if author is None else {"login": author}})
+        if args[:2] == ("pr", "view") and "autoMergeRequest" in args:
+            return json.dumps({"autoMergeRequest": None})
+        if args[0] == "api" and args[1].endswith("/files"):
+            return "\n".join(
+                json.dumps(
+                    {"filename": p, "previous_filename": None, "additions": 5, "deletions": 0}
+                )
+                for p in files
+            )
+        if args[0] == "api" and "/git/trees/" in args[1]:
+            return json.dumps({"truncated": False, "links": []})
+        if args[0] == "api" and args[1].endswith("/comments"):
+            return "\n".join(json.dumps(c) for c in comments)
+        if args[:2] == ("pr", "comment"):
+            body = args[args.index("--body") + 1]
+            cards.append(body)
+            comments.append({"login": "owner", "body": body})
+        return ""
+
+    policy = {**POLICY, "rater": "owner", "mode": mode, "no_rating": NO_RATING, **(policy or {})}
+    out = io.StringIO()
+    with (
+        mock.patch.object(g, "gh", fake_gh),
+        mock.patch.object(g, "load_policy", return_value=policy),
+        mock.patch.dict(os.environ, {"REPO": "owner/repo", "PR": "7", **(env or {})}),
+        contextlib.redirect_stdout(out),
+        contextlib.suppress(SystemExit),
+    ):
+        g.main()
+    return {
+        "calls": calls,
+        "statuses": [a for a in calls if a[0] == "api" and "/statuses/" in a[1]],
+        "merges": [a for a in calls if a[:2] == ("pr", "merge")],
+        "lookups": [a for a in calls if a[:2] == ("pr", "view") and "author" in a],
+        "cards": cards,
+        "out": out.getvalue(),
+    }
+
+
+class NoRating(unittest.TestCase):
+    def test_no_rating_files_without_rating_are_auto(self):  # AC1
+        self.assertEqual(g.NO_RATING_REASON, REASON)
+        for files in (
+            [f("CHANGELOG.md"), f("docs/user/install.md", add=12)],
+            [f("CHANGELOG.md")],
+            [f("docs/user/a.md")],
+            [{**f("CHANGELOG.md"), "previous": None}],  # main() passes previous=None
+        ):
+            with self.subTest(files=[x["path"] for x in files]):
+                self.assertIs(g.exempt_from_rating(files, NR), True)
+                result = nr_lane(files)
+                self.assertEqual(result[0], "auto")
+                self.assertNotIn(MISSING, result[3])
+                self.assertEqual(result[3], [])
+                self.assertIn(REASON, result[2])
+
+    def test_specs_runbooks_tests_and_agent_files_need_a_rating(self):  # AC2
+        cases = [
+            ("docs/specs/x/spec.md", "review"),
+            ("docs/runbooks/x.md", "review"),
+            ("tests/test_x.py", "review"),
+            ("README.md", "review"),
+            ("docs/user/sub/x.md", "review"),  # nested docs: * stays in one directory
+            (".claude/agents/x.md", "block"),
+        ]
+        for path, want in cases:
+            for files in ([f(path)], [f("CHANGELOG.md"), f(path)]):
+                with self.subTest(files=[x["path"] for x in files]):
+                    self.assertIs(g.exempt_from_rating(files, NR), False)
+                    result = nr_lane(files)
+                    self.assertEqual(result[0], want)
+                    self.assertIn(MISSING, result[3])
+                    self.assertNotIn(REASON, result[2])
+
+    def test_mixed_or_empty_pr_needs_a_rating(self):  # AC3
+        for files in (
+            [f("CHANGELOG.md"), f("app/views.py")],
+            [f("app/views.py"), f("CHANGELOG.md")],
+            [f("CHANGELOG.md"), f("README.md")],  # floor 0, but README.md is not on the list
+            [f("docs/user/a.md"), f("README.md")],
+            [],
+        ):
+            with self.subTest(files=[x["path"] for x in files]):
+                self.assertIs(g.exempt_from_rating(files, NR), False)
+                result = nr_lane(files)
+                self.assertEqual(result[0], "review")
+                self.assertIn(MISSING, result[3])
+
+    def test_exempt_file_needs_floor_zero_on_every_dimension(self):  # AC4
+        wide = {**POLICY, "no_rating": {"paths": ["/*.md", "/docs/user/*.md"]}}
+        self.assertTrue(g.exempt_from_rating([f("NOTES.md")], wide), "control: list matches")
+        cases = [
+            (f("AGENTS.md"), "block"),
+            (f("docs/user/session-timeout.md"), "review"),  # security 2
+            (f("docs/user/CLAUDE.md"), "block"),
+            ({**f("CHANGELOG.md"), "link": "symlink or submodule"}, "review"),
+        ]
+        for file, want in cases:
+            with self.subTest(path=file["path"], link=file.get("link")):
+                self.assertTrue(any(g.matches(file["path"], p) for p in wide["no_rating"]["paths"]))
+                self.assertIs(g.exempt_from_rating([file], wide), False)
+                result = nr_lane([file], policy=wide)
+                self.assertEqual(result[0], want)
+                self.assertIn(MISSING, result[3])
+        # Only user is non-zero and live = false: still not exempt, and decide keeps the blocker.
+        user_rule = {
+            "reason": "user-facing docs",
+            "paths": ["/docs/user/billing.md"],
+            "regression": 0,
+            "security": 0,
+            "user": 1,
+        }
+        user_only = {**NR, "live": False, "rule": POLICY["rule"] + [user_rule]}
+        files = [f("docs/user/billing.md")]
+        floor, reasons = g.rate_files(files, user_only)
+        self.assertEqual(floor, {"regression": 0, "security": 0, "user": 1}, "fixture")
+        self.assertIs(g.exempt_from_rating(files, user_only), False, "user 1 is not a zero floor")
+        result = g.decide(floor, reasons, None, user_only, exempt=True)
+        self.assertIn(MISSING, result[3], "decide must count user even when live = false")
+        self.assertEqual(result[0], "review")
+        self.assertNotIn(REASON, result[2])
+
+    def test_pr_level_floor_cancels_exemption(self):  # AC5
+        limit = NR["limits"]["small_diff_lines"]
+        each = limit // 2 + 1
+        files = [f("docs/user/a.md", add=each), f("docs/user/b.md", add=each)]
+        for one in files:
+            self.assertTrue(g.exempt_from_rating([one], NR), "control: each file alone is exempt")
+        self.assertIs(g.exempt_from_rating(files, NR), False, f"{2 * each} lines > {limit}")
+        result = nr_lane(files)
+        self.assertEqual(result[0], "review")
+        self.assertIn(MISSING, result[3])
+        at_limit = [f("docs/user/a.md", add=limit - limit // 2), f("docs/user/b.md", add=limit // 2)]
+        self.assertIs(g.exempt_from_rating(at_limit, NR), True, "exactly the limit is still small")
+        many = [f(f"docs/user/{i}.md", add=0, rem=0) for i in range(g.MAX_FILES)]
+        self.assertIs(g.exempt_from_rating(many, NR), False)
+        self.assertEqual(nr_lane(many)[0], "block")
+
+    def test_rename_needs_both_names_on_the_list(self):  # AC6
+        for file in (moved("CHANGELOG.md", "src/x.py"), moved("src/x.py", "CHANGELOG.md")):
+            with self.subTest(path=file["path"], previous=file["previous"]):
+                self.assertIs(g.exempt_from_rating([file], NR), False)
+                self.assertNotEqual(nr_lane([file])[0], "auto")
+        ok = moved("CHANGELOG.md", "docs/user/a.md")
+        self.assertIs(g.exempt_from_rating([ok], NR), True)
+        self.assertEqual(nr_lane([ok])[0], "auto")
+        # Both names rate 0, only one is on the list: the list check must reject, not the floor.
+        for file in (
+            moved("CHANGELOG.md", "docs/specs/x/spec.md"),
+            moved("docs/specs/x/spec.md", "CHANGELOG.md"),
+        ):
+            with self.subTest(path=file["path"], previous=file["previous"]):
+                self.assertEqual(g.rate_files([file], NR)[0], ZERO, "fixture: both names rate 0")
+                self.assertIs(g.exempt_from_rating([file], NR), False)
+                result = nr_lane([file])
+                self.assertEqual(result[0], "review")
+                self.assertIn(MISSING, result[3])
+
+    def test_non_canonical_or_lookalike_paths_are_not_exempt(self):  # AC7
+        names = [
+            "./CHANGELOG.md",
+            "CHANGELOG.md/",
+            "docs//user/a.md",
+            "docs/./user/a.md",
+            "docs/user/a\nb.md",
+            "docs/user/a\tb.md",
+            "docs/user/‮x.md",  # RIGHT-TO-LEFT OVERRIDE
+            "docs/user/​x.md",  # ZERO WIDTH SPACE
+            "docs/user/a\\b.md",
+            "/CHANGELOG.md",
+            "//CHANGELOG.md",  # POSIX keeps "//", and it matches "/CHANGELOG.md"
+            "changelog.md",
+            "СHANGELOG.md",  # Cyrillic capital Es
+        ]
+        for name in names:
+            for file in (f(name), moved("CHANGELOG.md", name)):
+                with self.subTest(path=file["path"], previous=file.get("previous")):
+                    self.assertIs(g.exempt_from_rating([file], NR), False)
+                    result = nr_lane([file])
+                    self.assertNotEqual(result[0], "auto")
+                    self.assertIn(MISSING, result[3])
+        # ".." would match a pattern whose * covers a directory name.
+        deep = {**POLICY, "no_rating": {"paths": ["/docs/*/*.md"]}}
+        self.assertTrue(g.matches("docs/../CHANGELOG.md", "/docs/*/*.md"), "fixture")
+        self.assertTrue(g.exempt_from_rating([f("docs/user/a.md")], deep), "control")
+        self.assertIs(g.exempt_from_rating([f("docs/../CHANGELOG.md")], deep), False)
+
+    def test_rating_and_draft_still_count_when_exempt(self):  # AC8
+        files = [f("CHANGELOG.md")]
+        self.assertIs(g.exempt_from_rating(files, NR), True, "fixture")
+        for kw, want in (
+            ({"verdict": "CHANGES"}, "review"),
+            ({"disputed": "R2"}, "review"),
+            ({"security": 1}, "review"),  # security pass n/a, not clean
+            ({"regression": 2}, "review"),
+            ({}, "auto"),
+        ):
+            with self.subTest(rating=kw):
+                result = nr_lane(files, [rating(**kw)])
+                self.assertEqual(result[0], want)
+                self.assertNotIn(REASON, result[2])
+                self.assertNotIn(MISSING, result[3])
+        for comments in ([], [rating()]):
+            with self.subTest(draft=True, rated=bool(comments)):
+                result = nr_lane(files, comments, draft=True)
+                self.assertEqual(result[0], "review")
+                self.assertIn("draft PR", result[3])
+                self.assertNotIn(MISSING, result[3])
+
+    def test_decide_exempt_flag_needs_zero_floor(self):  # AC9
+        result = g.decide(dict(ZERO), [], None, NR)
+        self.assertEqual(result[0], "review", "default exempt=False keeps today's blocker")
+        self.assertIn(MISSING, result[3])
+        self.assertNotIn(REASON, result[2])
+        self.assertIn(MISSING, g.decide(dict(ZERO), [], None, NR, exempt=False)[3])
+        for dim in g.DIMS:
+            for level in (1, 2, 3):
+                with self.subTest(dim=dim, level=level):
+                    floor = {**ZERO, dim: level}
+                    result = g.decide(floor, [], None, {**NR, "live": False}, exempt=True)
+                    self.assertIn(MISSING, result[3])
+                    self.assertNotEqual(result[0], "auto")
+                    self.assertNotIn(REASON, result[2])
+        result = g.decide(dict(ZERO), ["floor reason"], None, NR, exempt=True)
+        self.assertEqual(result[0], "auto")
+        self.assertEqual(result[2], ["floor reason", REASON])
+        self.assertEqual(result[3], [])
+        result = g.decide(dict(ZERO), [], None, NR, True, exempt=True)
+        self.assertEqual((result[0], result[3]), ("review", ["draft PR"]))
+        approved = g.parse_rating([rating()], SHA, ["owner"])
+        result = g.decide(dict(ZERO), [], approved, NR, exempt=True)
+        self.assertEqual((result[0], result[2], result[3]), ("auto", [], []))
+        self.assertEqual(len(g.rate_files([f("CHANGELOG.md")], NR)), 2)
+
+    def test_malformed_no_rating_fails_closed(self):  # AC11
+        malformed = [
+            ["/CHANGELOG.md"],
+            "x",
+            {"paths": "x"},
+            {"paths": {"a": "/CHANGELOG.md"}},
+            {"paths": [1]},
+            {"paths": ["/CHANGELOG.md", 1]},
+            {"paths": ["CHANGELOG.md"]},
+            {"paths": ["/CHANGELOG.md", "docs/user/*.md"]},  # every element, not just the first
+            {"paths": ["*.md"]},
+            {"paths": [""]},
+        ]
+        for value in malformed:
+            for files in ([f("CHANGELOG.md")], [], [f("app/views.py")]):
+                with self.subTest(no_rating=value, files=[x["path"] for x in files]):
+                    with self.assertRaises(SystemExit) as cm:
+                        g.exempt_from_rating(files, {**POLICY, "no_rating": value})
+                    self.assertIn("no_rating", str(cm.exception.code))
+        absent = {k: v for k, v in POLICY.items() if k != "no_rating"}
+        for policy in (absent, {**POLICY, "no_rating": {}}, {**POLICY, "no_rating": {"paths": []}}):
+            with self.subTest(no_rating=policy.get("no_rating", "absent")):
+                self.assertIs(g.exempt_from_rating([f("CHANGELOG.md")], policy), False)
+                self.assertIs(g.exempt_from_rating([], policy), False)
+        other_keys = {**POLICY, "no_rating": {"paths": ["/CHANGELOG.md"], "note": "ignored"}}
+        self.assertIs(g.exempt_from_rating([f("CHANGELOG.md")], other_keys), True)
+
+    def test_shipped_no_rating_list_is_minimal(self):  # AC13
+        self.assertEqual(
+            POLICY.get("no_rating", {}).get("paths"), ["/CHANGELOG.md", "/docs/user/*.md"]
+        )
+        for path in ("CHANGELOG.md", "docs/user/a.md"):
+            with self.subTest(path=path):
+                self.assertEqual(g.rate_files([f(path)], POLICY)[0], ZERO)
+                self.assertIs(g.exempt_from_rating([f(path)], POLICY), True)
+        self.assertIs(g.exempt_from_rating([f("README.md")], POLICY), False)
+
+
+class NoRatingMain(unittest.TestCase):
+    """main() wiring of the exemption (spec 4.4)."""
+
+    DOCS = ["CHANGELOG.md", "docs/user/install.md"]
+
+    def test_main_no_rating_pr_auto_merges(self):  # AC1
+        r = run_gate(self.DOCS)
+        self.assertEqual(r["calls"][0], FIRST_VIEW, "first pr view must stay byte-identical")
+        self.assertIn("state=pending", r["statuses"][0])
+        self.assertIn("state=success", r["statuses"][-1])
+        self.assertIn("description=auto R0 S0 U0", r["statuses"][-1])
+        self.assertIn("--auto", r["merges"][-1])
+        self.assertIn("--match-head-commit", r["merges"][-1])
+        self.assertIn(SHA, r["merges"][-1])
+        self.assertLess(r["calls"].index(r["statuses"][-1]), r["calls"].index(r["merges"][-1]))
+        self.assertEqual(len(r["lookups"]), 1)
+        # The author lookup happens only when the PR is exempt and has no rating.
+        for files, comments in ((["README.md"], []), (self.DOCS, [rating()])):
+            with self.subTest(files=files, rated=bool(comments)):
+                self.assertEqual(run_gate(files, comments)["lookups"], [])
+
+    def test_main_exemption_needs_a_trusted_author(self):  # AC10
+        for author in ("stranger", None):
+            with self.subTest(author=author):
+                r = run_gate(self.DOCS, author=author)
+                self.assertEqual(len(r["lookups"]), 1, "exempt PR without rating: look up author")
+                self.assertIn("description=review R0 S0 U0", r["statuses"][-1])
+                self.assertFalse(any("--auto" in m for m in r["merges"]))
+                self.assertIn(f"- {MISSING}", r["cards"][-1].splitlines())
+                self.assertNotIn(REASON, r["cards"][-1])
+        with self.subTest(author="lookup fails"):
+            r = run_gate(self.DOCS, author=LOOKUP_FAILS)
+            self.assertEqual(len(r["lookups"]), 1)
+            self.assertEqual(len(r["statuses"]), 1)
+            self.assertIn("state=pending", r["statuses"][0])
+            self.assertEqual((r["merges"], r["cards"]), ([], []))
+
+    def test_main_malformed_no_rating_stays_pending(self):  # AC11
+        for bad in (["/CHANGELOG.md"], {"paths": ["CHANGELOG.md"]}, {"paths": [1]}):
+            # The rated README.md PR auto-merges today: validation must run even with a rating.
+            for files, comments in ((["CHANGELOG.md"], []), (["README.md"], [rating()])):
+                with self.subTest(no_rating=bad, files=files):
+                    r = run_gate(files, comments, policy={"no_rating": bad})
+                    self.assertEqual(len(r["statuses"]), 1)
+                    self.assertIn("state=pending", r["statuses"][0])
+                    self.assertEqual((r["merges"], r["cards"]), ([], []))
+                    dry = run_gate(
+                        files, comments, policy={"no_rating": bad}, env={"RISK_GATE_DRY_RUN": "1"}
+                    )
+                    self.assertEqual((dry["out"], dry["statuses"]), ("", []))
+
+    def test_dry_run_and_card_show_the_exemption(self):  # AC12
+        r = run_gate(self.DOCS, env={"RISK_GATE_DRY_RUN": "1"})
+        self.assertEqual(r["out"], f"auto R0 S0 U0 head {SHA[:12]}\n  {REASON}\n")
+        self.assertEqual((r["statuses"], r["merges"], r["cards"]), ([], [], []))
+        self.assertFalse([a for a in r["calls"] if a[:2] == ("pr", "comment")])
+        r = run_gate(self.DOCS)
+        self.assertEqual(len(r["cards"]), 1)
+        card = r["cards"][0]
+        self.assertTrue(card.startswith(g.CARD_MARK))
+        self.assertIn("### Risk gate: **auto**", card)
+        self.assertIn(f"- {REASON}", card.splitlines())
+        self.assertNotIn("Not eligible", card)
+
+
+class PolicyAndDocs(unittest.TestCase):
+    def test_opencode_config_blocks(self):  # AC14
+        for path in (".opencode/agent/lead.md", ".opencode/opencode.json", "pkg/.opencode/x.md"):
+            for comments in ([rating()], []):
+                with self.subTest(path=path, rated=bool(comments)):
+                    self.assertEqual(lane([f(path)], comments)[0], "block")
+        rule = next(r for r in POLICY["rule"] if r.get("reason") == "CI, deploy, gate or agent config")
+        self.assertIn("*/.opencode/*", rule["paths"])
+
+    def test_payments_template_is_inert_and_valid_when_uncommented(self):  # AC15
+        reasons = [r.get("reason") for r in POLICY.get("rule", [])]
+        self.assertNotIn("payments or personal data", reasons, "template must stay commented")
+        lines = Path(__file__).with_name("risk-policy.toml").read_text().splitlines()
+        begin = "# BEGIN TEMPLATE payments-personal-data"
+        end = "# END TEMPLATE payments-personal-data"
+        self.assertTrue(begin in lines, f"{begin!r} line missing from risk-policy.toml (4.7)")
+        self.assertTrue(end in lines, f"{end!r} line missing from risk-policy.toml (4.7)")
+        self.assertEqual((lines.count(begin), lines.count(end)), (1, 1))
+        i, j = lines.index(begin), lines.index(end)
+        self.assertLess(i, j)
+        block = lines[i + 1 : j]
+        for line in block:
+            self.assertTrue(line == "#" or line.startswith("# "), f"not a template line: {line!r}")
+        after = [x for x in lines[j + 1 :] if x.strip() and not x.lstrip().startswith("#")]
+        self.assertEqual(after, [], "template belongs at the end of the policy")
+        parsed = tomllib.loads("\n".join("" if x == "#" else x[2:] for x in block))
+        self.assertEqual(list(parsed), ["rule"])
+        self.assertEqual(len(parsed["rule"]), 1)
+        self.assertEqual(parsed["rule"][0]["reason"], "payments or personal data")
+        policy = {**POLICY, "rule": POLICY["rule"] + parsed["rule"]}
+        for path in ("app/payments/charge.py", "src/billing/invoice.py", "app/pii/export.py"):
+            with self.subTest(path=path):
+                self.assertGreaterEqual(g.rate_files([f(path)], policy)[0]["security"], 2)
+        # "Docs on these paths lose the T0 exemption" (template comment).
+        docs = [f("docs/user/payment-faq.md")]
+        self.assertIs(g.exempt_from_rating(docs, NR), True, "control")
+        self.assertIs(g.exempt_from_rating(docs, {**policy, "no_rating": NO_RATING}), False)
+
+    # The README is not copied to a product repo's .github/risk-gate/ (README setup step 1).
+    @unittest.skipUnless(Path(__file__).with_name("README.md").exists(), "README.md not copied")
+    def test_readme_documents_no_rating_opencode_and_template(self):  # AC16
+        text = Path(__file__).with_name("README.md").read_text()
+        for needle in ("[no_rating]", ".opencode/", "BEGIN TEMPLATE payments-personal-data"):
+            with self.subTest(needle=needle):
+                self.assertTrue(needle in text, f"{needle!r} not in gate README.md (spec 7)")
 
 
 if __name__ == "__main__":
