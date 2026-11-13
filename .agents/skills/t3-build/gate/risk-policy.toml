@@ -21,6 +21,13 @@ small_diff_lines = 200   # more changed lines (added + removed): regression at l
 # hours = [8, 20]              # auto-merge only from 08:00 to 19:59
 # timezone = "Europe/Berlin"
 
+[no_rating]
+# T0: files that may merge without a risk rating. User documentation only: never tests, specs,
+# runbooks, agent definitions or anything that runs or steers. Patterns MUST start with "/":
+# anchored, * stays in one directory, ** is not recursive. A file is exempt only if it also
+# rates 0 on every dimension under the rules below, and only if the rater opened the PR.
+paths = ["/CHANGELOG.md", "/docs/user/*.md"]
+
 [default]                      # ordinary code
 regression = 1
 
@@ -69,6 +76,18 @@ regression = 2
 reason = "CI, deploy, gate or agent config"
 # Agent config and instruction files steer every session and can hold merge rules.
 paths = [".github/*", "*/Dockerfile*", "*/docker-compose*", "*/deploy/*", "*/infra/*", "*.tf",
-         "*/AGENTS.md", "*/CLAUDE.md", "*/CLAUDE.local.md", "*/.claude/*", "*/.codex/*",
-         "*/.agents/*", "*/.mcp.json"]
+         "*/AGENTS.md", "*/AGENTS.override.md", "*/AGENT.md", "*/CLAUDE.md", "*/CLAUDE.local.md",
+         "*/GEMINI.md", "*/WARP.md", "*/CRUSH.md", "*/CRUSH.local.md", "*/QWEN.md",
+         "*/.claude/*", "*/.codex/*", "*/.opencode/*", "*/.agents/*", "*/.mcp.json"]
 regression = 3
+
+# Payments and personal data: fill the paths from the project's threat model, then uncomment
+# the block (remove the leading "# " from each line). Docs on these paths lose the T0 exemption.
+# BEGIN TEMPLATE payments-personal-data
+# [[rule]]
+# reason = "payments or personal data"
+# paths = ["*/payment*", "*/billing/*", "*/checkout/*", "*/pii/*", "*/personal_data/*", "*/gdpr/*"]
+# regression = 1               # a rule hit replaces [default]; keep ordinary code's floor
+# security = 2
+# user = 2
+# END TEMPLATE payments-personal-data

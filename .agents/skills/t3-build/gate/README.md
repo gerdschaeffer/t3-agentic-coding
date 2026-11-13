@@ -11,7 +11,9 @@ rating, never an average:
 
 Auto-merge conditions: a trusted risk rating for the current head commit,
 verdict APPROVE, no disputed findings, a clean security pass whenever security
-is 1 or more, not a draft, inside merge hours.
+is 1 or more, not a draft, inside merge hours. Exception: if every file is on
+the `no_rating` list, rates 0 and the PR was opened by the rater, no rating is
+needed (see "No-rating list (T0)").
 
 ## Shadow-mode repos: the leader's own check
 
@@ -25,7 +27,9 @@ RISK_GATE_DRY_RUN=1 PR=<n> REPO=<owner/repo> \
   python3 <(git show origin/main:.github/risk-gate/risk_gate.py)
 ```
 
-It prints the lane, ratings and reasons and writes nothing. Run it from a
+It prints the lane, ratings and reasons and writes nothing. When the no-rating
+exemption was used, it prints the reason line
+`no rating needed: only user-documentation files`. Run it from a
 recipe the branch cannot change (e.g. `make -f <(git show origin/main:Makefile)`).
 
 ## Scale (reviewers rate with this)
@@ -69,7 +73,62 @@ the owner's identity, so the gate cannot tell an honest relay of Sol's verdict
 from a faked one. A buggy or prompt-injected leader could auto-merge ordinary
 code. Path rules still hold: auth, secrets, dependencies, migrations and CI never
 reach the auto lane. Upgrade path: run the rating inside CI and trust only
-`github-actions[bot]`, or restrict the auto lane to a path floor of 0.
+`github-actions[bot]`, or restrict the auto lane to a path floor of 0. The
+no-rating exemption trusts the rater login as PR author, the same identity this
+relay risk already covers. The open risks of the no-rating list are below; they
+are not part of this decision.
+
+## No-rating list (T0)
+
+User documentation gets no model review, so it has no rating. The policy's
+`[no_rating]` table lists the files that may merge without one:
+
+```toml
+[no_rating]
+paths = ["/CHANGELOG.md", "/docs/user/*.md"]
+```
+
+- User documentation only: never tests, specs, runbooks, agent definitions or
+  anything that runs or steers. Do not widen the `docs` or `tests` rules for it.
+- Every pattern must start with `/` (anchored, `*` stays in one directory); an
+  unanchored pattern makes the gate fail closed (status stays pending).
+- Do not use `**`: it is not recursive. Nested docs need one pattern per depth
+  (`/docs/user/*/*.md`).
+- Every file must be on the list, under both names for a rename, and the whole PR
+  must rate 0 on every dimension (diff size and file count included). One other
+  file, a symlink or a block or security rule hit, and the PR needs a rating.
+  The block rules are also checked case-insensitively for the exemption: an
+  instruction file like `docs/user/claude.md` is never exempt.
+- Every file must change at least one line: a binary, mode-only or empty file, or
+  a rename that reports 0 changed lines, is not exempt (GitHub reports a renamed
+  binary with new content the same way).
+- Names must be ASCII: `AGENTſ.md` (U+017F) folds to `AGENTS.md` on some
+  filesystems, so a non-ASCII documentation name needs a rating.
+- The PR author must be the rater login. A PR by anyone else needs a rating.
+- A rating for the head commit, if present, counts as usual. A rating-marker
+  comment by the rater for the head commit, even a malformed one, means the
+  exemption does not apply.
+- The card and the dry run show the reason line
+  `no rating needed: only user-documentation files`.
+
+**Open risks of the no-rating list** (the owner accepts them by merging a policy
+that has the list; they are not covered by the dated decision above):
+
+- The exemption binds to who opened the PR, not who wrote the head commit: a PR
+  branch opened by the rater must not accept pushes from others.
+- The instruction filenames in the block rule are a deny list: the default names
+  of Claude Code, Codex, Gemini CLI, OpenCode, Amp, Warp, Crush and Qwen Code.
+  Other names (known: `CONTEXT.md`, `IFLOW.md`, `CODEBUDDY.md`) and any `*.md`
+  that a tool config names (Codex `project_doc_fallback_filenames`, Gemini and
+  Qwen `context.fileName`, `opencode.json` `instructions`, an `@import`) can sit
+  in an exempt folder and merge unreviewed. A project using another agent adds
+  its names to the block rule, keeps the `no_rating` list narrow, and never
+  names an exempt file in an agent config.
+- A veto comment that misses the exact marker (first line, full head SHA) does
+  not stop an exempt PR, and the workflow does not re-run on it: convert the PR
+  to draft or close it.
+- The case check lowercases rule patterns. A character range that spans cases
+  (`[A-_]`) is not folded correctly; write such patterns without it.
 
 ## Setup per repository
 
@@ -94,6 +153,15 @@ reach the auto lane. Upgrade path: run the rating inside CI and trust only
    in shadow mode; merge it by hand.
 7. Label PRs that caused a revert or a red staging `caused-failure`; once a
    month compare failures per lane and tighten rules that let failures through.
+8. Fill the payments and personal-data template at the end of
+   `risk-policy.toml` (between `# BEGIN TEMPLATE payments-personal-data` and
+   `# END TEMPLATE payments-personal-data`) from the threat model and uncomment it.
+
+Agent config under `.opencode/` blocks like `.claude/` and `.codex/`. The tests
+`test_shipped_no_rating_list_is_minimal` and
+`test_payments_template_is_inert_and_valid_when_uncommented` check the policy as
+shipped; a project that customises the policy adapts them. The README test is
+skipped when `README.md` is not next to the tests (README is not copied in step 1).
 
 Later, when production CD exists: `live = true`, feature flags off by default,
 tested rollback, merge hours. Canary analysis and error-budget freezes only once

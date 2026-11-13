@@ -24,6 +24,7 @@ RATING_MARK = "<!-- risk-rating sha="
 CARD_MARK = "<!-- risk-gate-card -->"
 # GitHub's PR files API returns at most 3000 files; a PR that size cannot be rated fully.
 MAX_FILES = 3000
+NO_RATING_REASON = "no rating needed: only user-documentation files"
 
 
 def load_policy(path):
@@ -40,8 +41,12 @@ def matches(path, pattern):
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
-def rate_files(files, policy):
-    """Deterministic floor from changed paths and diff size: (scores, reasons)."""
+def rate_files(files, policy, fold=False):
+    """Deterministic floor from changed paths and diff size: (scores, reasons).
+
+    fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
+    """
+    key = str.lower if fold else (lambda s: s)
     scores = dict.fromkeys(DIMS, 0)
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
@@ -55,7 +60,11 @@ def rate_files(files, policy):
             found.append(("regression", 2, f"{f['path']} ({f['link']})"))
         # A rename is rated under both names: moving .github/x away must not escape its floor.
         for path in filter(None, (f["path"], f.get("previous"))):
-            hits = [r for r in policy.get("rule", []) if any(matches(path, p) for p in r["paths"])]
+            hits = [
+                r
+                for r in policy.get("rule", [])
+                if any(matches(key(path), key(p)) for p in r["paths"])
+            ]
             for rule in hits or [policy.get("default", {"regression": 1})]:
                 why = rule.get("reason", "ordinary code")
                 for dim in DIMS:
@@ -76,6 +85,44 @@ def rate_files(files, policy):
         )
     )
     return scores, reasons
+
+
+def canonical(name):
+    """A path as Git writes it: no "./", "//", "..", "\\", trailing "/" or hidden characters."""
+    return (
+        bool(name)
+        and not name.startswith("/")
+        and str(PurePosixPath(name)) == name
+        and ".." not in name.split("/")
+        and "\\" not in name
+        and name.isascii()  # ſ (U+017F) folds to s on some filesystems, not under str.lower
+        and name.isprintable()
+    )
+
+
+def exempt_from_rating(files, policy):
+    """True if the PR may skip the rating: every name canonical and on no_rating, floor zero."""
+    table = policy.get("no_rating", {})
+    paths = table.get("paths", []) if isinstance(table, dict) else None
+    # Only anchored patterns: an unanchored * crosses "/" and would exempt specs and agent files.
+    if not isinstance(paths, list) or not all(
+        isinstance(p, str) and p.startswith("/") for p in paths
+    ):
+        raise SystemExit("policy no_rating is malformed; risk-gate stays pending")
+    if not files or any(
+        any(rate_files(files, policy, fold=fold)[0].values()) for fold in (False, True)
+    ):
+        return False
+    # Binary, mode-only and empty files, and 0/0 renames, report 0 changed lines and would slip
+    # past the size rule.
+    return all(
+        f["additions"] + f["deletions"] > 0
+        and all(
+            canonical(name) and any(matches(name, p) for p in paths)
+            for name in filter(None, (f["path"], f.get("previous")))
+        )
+        for f in files
+    )
 
 
 def parse_rating(comments, sha, trusted):
@@ -104,13 +151,17 @@ def parse_rating(comments, sha, trusted):
     return None
 
 
-def decide(floor, floor_reasons, rating, policy, draft=False):
+def decide(floor, floor_reasons, rating, policy, draft=False, exempt=False):
     """Return (lane, scores, reasons, blockers). The rating can raise scores, never lower them."""
     scores, reasons, blockers = dict(floor), list(floor_reasons), []
     if draft:
         blockers.append("draft PR")
     if rating is None:
-        blockers.append("no trusted risk rating for the head commit")
+        # Re-check the floor here so a wrong exempt=True from any caller stays harmless.
+        if exempt and not any(scores.values()):
+            reasons.append(NO_RATING_REASON)
+        else:
+            blockers.append("no trusted risk rating for the head commit")
     else:
         for dim in DIMS:
             if rating[dim] > scores[dim]:
@@ -238,8 +289,17 @@ def main():
         for c in gh_lines(f"repos/{repo}/issues/{pr}/comments", ".[] | {login: .user.login, body}")
     ]
 
+    rating = parse_rating(comments, sha, trusted)
+    exempt = exempt_from_rating(files, policy)  # always: it validates the policy
+    marker = f"{RATING_MARK}{sha} -->"
+    if any(c["login"] in trusted and c["body"].startswith(marker) for c in comments):
+        exempt = False  # a rating comment, even a malformed one, may be the rater's veto
+    if exempt and rating is None:
+        # Fork PRs run too: without a rating only the trusted login may author an exempt PR.
+        author = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "author"))
+        exempt = (author.get("author") or {}).get("login") in trusted
     lane, scores, reasons, blockers = decide(
-        *rate_files(files, policy), parse_rating(comments, sha, trusted), policy, pr_info["isDraft"]
+        *rate_files(files, policy), rating, policy, pr_info["isDraft"], exempt=exempt
     )
     method = policy.get("merge", {}).get("method", "squash")
     if method not in ("squash", "merge", "rebase"):
