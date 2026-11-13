@@ -706,5 +706,214 @@ class PolicyAndDocs(unittest.TestCase):
                 self.assertTrue(needle in text, f"{needle!r} not in gate README.md (spec 7)")
 
 
+# WP1 security round 1 amendment (spec 4.2 steps 3-4, 4.4, 4.6, AC14, AC18 to AC20).
+
+INSTRUCTION_FILES = ["AGENTS.override.md", "GEMINI.md"]
+CASE_VARIANTS = [
+    "docs/user/agents.md",
+    "docs/user/claude.md",
+    "docs/user/Claude.md",
+    "docs/user/agents.override.md",
+    "docs/user/gemini.md",
+    "docs/user/AGENTS.override.md",
+    "docs/user/GEMINI.md",
+    ".OpenCode/x.md",
+]
+
+
+def drop_line(comment, key):
+    """The comment without its `key:` line."""
+    body = "\n".join(x for x in comment["body"].split("\n") if not x.startswith(f"{key}:"))
+    return {**comment, "body": body}
+
+
+class Amendment(unittest.TestCase):
+    def test_agent_instruction_files_block(self):  # AC14 (extended)
+        rule = next(r for r in POLICY["rule"] if r.get("reason") == "CI, deploy, gate or agent config")
+        for name in INSTRUCTION_FILES:
+            with self.subTest(pattern=name):
+                self.assertIn(f"*/{name}", rule["paths"])
+            for path in (name, f"docs/user/{name}", f"a/b/{name}"):
+                for comments in ([rating()], []):
+                    with self.subTest(path=path, rated=bool(comments)):
+                        self.assertEqual(lane([f(path)], comments)[0], "block")
+                        self.assertIs(g.exempt_from_rating([f(path)], NR), False)
+                        self.assertEqual(nr_lane([f(path)], comments)[0], "block")
+
+    def test_exemption_survives_case_variants_of_instruction_files(self):  # AC18
+        project = {**POLICY, "no_rating": {"paths": ["/docs/user/*.md", "/.OpenCode/*"]}}
+        self.assertIs(g.exempt_from_rating([f("docs/user/a.md")], project), True, "control")
+        for path in CASE_VARIANTS:
+            for policy, label in ((NR, "shipped"), (project, "project")):
+                with self.subTest(path=path, policy=label):
+                    paths = policy["no_rating"]["paths"]
+                    if label == "project":
+                        self.assertTrue(any(g.matches(path, p) for p in paths), "fixture")
+                    self.assertIs(g.exempt_from_rating([f(path)], policy), False)
+                    self.assertIs(
+                        g.exempt_from_rating([f("CHANGELOG.md"), f(path)], policy), False
+                    )
+                    result = nr_lane([f(path)], policy=policy)
+                    self.assertNotEqual(result[0], "auto")
+                    self.assertIn(MISSING, result[3])
+                    self.assertNotIn(REASON, result[2])
+            with self.subTest(path=path, fold=True):
+                folded = g.rate_files([f(path)], POLICY, fold=True)[0]
+                self.assertEqual(folded["regression"], 3, "folded path hits the block rule")
+        # The list match itself stays case-sensitive: folding it would exempt these.
+        for path in ("changelog.md", "Docs/User/a.md", "DOCS/user/a.md", "docs/user/A.MD"):
+            with self.subTest(path=path, list_match="case-sensitive"):
+                self.assertIs(g.exempt_from_rating([f(path)], NR), False)
+        for path in ("CHANGELOG.md", "docs/user/a.md"):
+            with self.subTest(path=path, exempt=True):
+                self.assertEqual(g.rate_files([f(path)], POLICY, fold=True)[0], ZERO)
+                self.assertIs(g.exempt_from_rating([f(path)], NR), True)
+                self.assertEqual(nr_lane([f(path)])[0], "auto")
+        # Default fold=False: the lanes and ratings do not change (only the exemption folds).
+        before = {  # values before the amendment, from 8144d84
+            "docs/user/Claude.md": (ZERO, []),
+            "docs/user/claude.md": (ZERO, []),
+            "docs/user/agents.md": (ZERO, []),
+            ".OpenCode/x.md": (ZERO, []),
+            "src/Claude.md": (ZERO, []),
+            ".OpenCode/opencode.json": (
+                {**ZERO, "regression": 1},
+                ["regression 1: .OpenCode/opencode.json (ordinary code)"],
+            ),
+        }
+        for path, want in before.items():
+            with self.subTest(path=path, fold=False):
+                files = [f(path)]
+                self.assertEqual(g.rate_files(files, POLICY), want)
+                self.assertEqual(g.rate_files(files, POLICY, fold=False), want)
+                self.assertEqual(g.rate_files(files, NR), want)
+        for path in ("docs/user/Claude.md", "docs/user/claude.md", ".OpenCode/x.md"):
+            with self.subTest(path=path, lane="rated, as today"):
+                self.assertEqual(lane([f(path)], [rating()])[0], "auto")
+                self.assertEqual(nr_lane([f(path)], [rating()])[0], "auto")
+        r = run_gate(["docs/user/Claude.md"], [rating()])
+        self.assertIn("description=auto R0 S0 U0", r["statuses"][-1])
+        self.assertEqual(r["lookups"], [])
+        # Existing fixtures: default and explicit fold=False agree, scores and reasons.
+        fixtures = [
+            [f("README.md"), f("tests/test_x.py")],
+            [f("app/views.py")],
+            [f("app/migrations/0002.py")],
+            [f(".github/risk-gate/risk-policy.toml")],
+            [f("AGENTS.md")],
+            [f("src/CLAUDE.md")],
+            [f(".claude/settings.json")],
+            [f(".mcp.json")],
+            [f("accounts/auth.py")],
+            [f("pyproject.toml")],
+            [f("app/a.py", add=POLICY["limits"]["small_diff_lines"]), f("app/b.py", add=1)],
+            [f("tests/test_x.py", add=0, rem=20)],
+            [{**f("archive/ci.txt"), "previous": ".github/workflows/ci.yml"}],
+            [{**f("unittest"), "link": "symlink or submodule"}],
+            [f("CHANGELOG.md"), f("docs/user/install.md", add=12)],
+            [f("docs/user/session-timeout.md")],
+            [f(".opencode/agent/lead.md")],
+        ]
+        for files in fixtures:
+            with self.subTest(files=[x["path"] for x in files]):
+                self.assertEqual(g.rate_files(files, POLICY), g.rate_files(files, POLICY, fold=False))
+
+    def test_zero_change_files_are_not_exempt(self):  # AC20
+        for files in (
+            [f("CHANGELOG.md", add=0, rem=0)],
+            [f("docs/user/a.md", add=0, rem=0)],
+            [{**f("CHANGELOG.md", add=0, rem=0), "previous": None}],  # main() passes None
+            [f("CHANGELOG.md"), f("docs/user/a.md", add=0, rem=0)],
+            [f("docs/user/a.md", add=0, rem=0), f("CHANGELOG.md")],
+        ):
+            with self.subTest(files=[(x["path"], x["additions"], x["deletions"]) for x in files]):
+                self.assertEqual(g.rate_files(files, NR)[0], ZERO, "fixture: floor zero")
+                self.assertIs(g.exempt_from_rating(files, NR), False)
+                result = nr_lane(files)
+                self.assertEqual(result[0], "review")
+                self.assertIn(MISSING, result[3])
+                self.assertNotIn(REASON, result[2])
+        many = [f(f"docs/user/{i}.md", add=0, rem=0) for i in range(g.MAX_FILES - 1)]
+        self.assertEqual(g.rate_files(many, NR)[0], ZERO, "fixture: below MAX_FILES, 0 lines")
+        self.assertIs(g.exempt_from_rating(many, NR), False)
+        self.assertEqual(nr_lane(many)[0], "review")
+        # Controls: one changed line is enough, and a pure rename reports 0 and 0.
+        for files in (
+            [f("CHANGELOG.md", add=1, rem=0)],
+            [f("CHANGELOG.md", add=0, rem=1)],
+            [{**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 0}],
+            [
+                {**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 0},
+                f("docs/user/b.md"),
+            ],
+        ):
+            with self.subTest(files=[(x["path"], x.get("previous")) for x in files], exempt=True):
+                self.assertIs(g.exempt_from_rating(files, NR), True)
+                self.assertEqual(nr_lane(files)[0], "auto")
+        # A pure rename still needs both names on the list.
+        out = {**moved("CHANGELOG.md", "docs/specs/x/spec.md"), "additions": 0, "deletions": 0}
+        self.assertIs(g.exempt_from_rating([out], NR), False)
+
+
+class AmendmentMain(unittest.TestCase):
+    DOCS = ["CHANGELOG.md", "docs/user/install.md"]
+
+    def assert_exempt_auto(self, r):
+        self.assertEqual(len(r["lookups"]), 1, "exempt PR without rating: look up author")
+        self.assertIn("description=auto R0 S0 U0", r["statuses"][-1])
+        self.assertIn("--auto", r["merges"][-1])
+        self.assertIn(f"- {REASON}", r["cards"][-1].splitlines())
+
+    def test_main_malformed_rating_comment_disables_the_exemption(self):  # AC19
+        malformed = {
+            "regression: 4": rating(regression=4),
+            "regression: n/a": rating(regression="n/a"),
+            "no user line": drop_line(rating(), "user"),
+            "newest of two is malformed": None,  # set below
+        }
+        malformed["newest of two is malformed"] = [rating(), rating(regression=4)]
+        for label, comments in malformed.items():
+            comments = comments if isinstance(comments, list) else [comments]
+            self.assertIsNone(g.parse_rating(comments, SHA, ["owner"]), f"fixture: {label}")
+            with self.subTest(case=label):
+                r = run_gate(self.DOCS, comments)
+                self.assertEqual(r["lookups"], [], "a trusted marker: no author lookup needed")
+                self.assertIn("state=pending", r["statuses"][0])
+                self.assertIn("description=review R0 S0 U0", r["statuses"][-1])
+                self.assertFalse(any("--auto" in m for m in r["merges"]))
+                self.assertIn(f"- {MISSING}", r["cards"][-1].splitlines())
+                self.assertNotIn(REASON, r["cards"][-1])
+                dry = run_gate(self.DOCS, comments, env={"RISK_GATE_DRY_RUN": "1"})
+                self.assertTrue(dry["out"].startswith("review R0 S0 U0"), dry["out"])
+                self.assertNotIn(REASON, dry["out"])
+        with self.subTest(case="CHANGES"):
+            r = run_gate(self.DOCS, [rating(verdict="CHANGES")])
+            self.assertEqual(r["lookups"], [])
+            self.assertIn("description=review R0 S0 U0", r["statuses"][-1])
+            self.assertFalse(any("--auto" in m for m in r["merges"]))
+            self.assertIn("- review verdict is CHANGES, not APPROVE", r["cards"][-1].splitlines())
+            self.assertNotIn(REASON, r["cards"][-1])
+            self.assertNotIn(MISSING, r["cards"][-1])
+        with self.subTest(case="APPROVE"):  # the rating path, as today
+            r = run_gate(self.DOCS, [rating()])
+            self.assertEqual(r["lookups"], [])
+            self.assertIn("description=auto R0 S0 U0", r["statuses"][-1])
+            self.assertIn("--auto", r["merges"][-1])
+            self.assertNotIn(REASON, r["cards"][-1])
+        # Marker comments that do not count leave the exemption in place.
+        other_sha = "b" * 40
+        shifted = rating(regression=4)
+        shifted["body"] = "\n" + shifted["body"]
+        for label, comments in {
+            "other login, malformed": [rating(login="stranger", regression=4)],
+            "other login, CHANGES": [rating(login="stranger", verdict="CHANGES")],
+            "other SHA, malformed": [rating(sha=other_sha, regression=4)],
+            "other SHA, CHANGES": [rating(sha=other_sha, verdict="CHANGES")],
+            "marker not at character 0": [shifted],
+        }.items():
+            with self.subTest(case=label):
+                self.assert_exempt_auto(run_gate(self.DOCS, comments))
+
+
 if __name__ == "__main__":
     unittest.main()
