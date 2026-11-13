@@ -449,7 +449,8 @@ class TestAC2Malformed(Base):
         ]
         self.write_log(lines, final_newline=False)
         out = self.ok(self.report())
-        self.assertIn("Events: 2 (malformed skipped: 8). Slices: 2.", out.splitlines())
+        # nine malformed lines are listed above (the first draft of this test counted eight)
+        self.assertIn("Events: 2 (malformed skipped: 9). Slices: 2.", out.splitlines())
 
     def test_all_lines_malformed_still_exit0(self):
         self.write_log(["nope", "[]", {"slice": "x"}])
@@ -493,6 +494,18 @@ class TestAC3CrossCheck(Base):
         self.assertEqual(table[2], ["agent commits without Tier trailer", "-", "1"])
         self.assertEqual(table[3], ["reverts", "-", "1"])
         self.assertEqual(table[4], ["failed checks after merge", "-", "n/a (no --ci-runs)"])
+
+    def test_agent_and_tier_lines_in_their_own_paragraph_count(self):
+        # regression: the repo's commit footer puts Agent:/Tier: in a paragraph before Co-Authored-By:,
+        # which git's trailer parser does not treat as trailers (references/commit-trailers.md)
+        r = self.new_repo("conv")
+        r.commit("Base", date="2026-01-01")
+        r.commit("Work", body=f"{AGENT}\nTier: T1\n\nCo-Authored-By: A <a@example.com>", date="2026-01-02")
+        r.commit("Work 2", body=f"{AGENT}\n\nCo-Authored-By: A <a@example.com>", date="2026-01-03")
+        out = self.ok(self.report("--git", str(r.path)))
+        table = rows(out, H_X)
+        self.assertEqual(find(table, "commits with Agent trailer")[2], "2")
+        self.assertEqual(find(table, "agent commits without Tier trailer")[2], "1")
 
     def test_log_ship_count_is_slices_not_events(self):
         out, _ = self.run_full(ships("s1", "s2") + ships("s2") + [ev("s3", "spec")])
@@ -1154,6 +1167,59 @@ class TestAC8Golden(Base):
     def test_golden_run_is_reproducible(self):
         g = self.fixture()
         self.assertEqual(self.ok(self.report("--git", g)), self.ok(self.report("--git", g)))
+
+
+# ---------------------------------------------------------------- review round 1 regressions
+
+class TestReviewRound1(Base):
+    def test_s2_nested_json_and_huge_numbers_are_malformed_not_crashes(self):
+        self.write_log(["[" * 2000 + "]" * 2000,
+                        ev("a", "spec", duration=10 ** 400), ev("b", "code-review", round=10 ** 400, verdict="APPROVE"),
+                        ev("c", "code-review", round=1, verdict="APPROVE",
+                           findings={"blocker": 10 ** 400, "should": 0, "nit": 0, "security": 0}),
+                        ev("d", "spec")])
+        out = self.ok(self.report())
+        self.assertIn("Events: 1 (malformed skipped: 4). Slices: 1.", out.splitlines())
+
+    def test_s3_since_also_limits_failed_checks(self):
+        r, s = self.full_repo()
+        ci = self.ci_file([{"sha": s["A"], "conclusion": "failure"}, {"sha": s["PR3"], "conclusion": "failure"}])
+        out = self.ok(self.report("--git", s["path"], "--ci-runs", ci, "--since", "2026-01-10"))
+        self.assertEqual(find(rows(out, H_X), "failed checks after merge")[2], "1")
+
+    def test_s4_symlinked_log_is_an_io_error(self):
+        d = self.state / REPO
+        d.mkdir(parents=True)
+        (d / "events.jsonl").symlink_to(os.devnull)
+        res = self.report()
+        self.assertEqual(res.returncode, 1)
+        self.assertEqual(res.stdout, "")
+
+    def test_s4_one_huge_line_is_one_malformed_line(self):
+        d = self.state / REPO
+        d.mkdir(parents=True)
+        (d / "events.jsonl").write_bytes(b"x" * 3_000_000 + b"\n" + json.dumps(ev("a", "spec")).encode() + b"\n")
+        out = self.ok(self.report())
+        self.assertIn("Events: 1 (malformed skipped: 1). Slices: 1.", out.splitlines())
+
+    def test_s1_hostile_signature_config_runs_nothing(self):
+        r = self.new_repo("hostile")
+        r.commit("Base", date="2026-01-01")
+        tree = r.git("rev-parse", "HEAD^{tree}")
+        parent = r.git("rev-parse", "HEAD")
+        raw = (f"tree {tree}\nparent {parent}\nauthor A <a@example.com> 1767614400 +0000\n"
+               f"committer A <a@example.com> 1767614400 +0000\n"
+               "gpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n -----END PGP SIGNATURE-----\n\nsigned\n")
+        sha = r.git("hash-object", "-t", "commit", "-w", "--stdin", input=raw)
+        r.git("update-ref", "HEAD", sha)
+        marker = self.tmp / "ran"
+        prog = self.tmp / "evil.sh"
+        prog.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        prog.chmod(0o755)
+        r.git("config", "log.showSignature", "true")
+        r.git("config", "gpg.program", str(prog))
+        self.ok(self.report("--git", str(r.path)))
+        self.assertFalse(marker.exists(), "a hostile repo config ran a program")
 
 
 if __name__ == "__main__":

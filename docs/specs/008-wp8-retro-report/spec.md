@@ -34,13 +34,18 @@ script by path). Python 3 standard library only; `from log_event import validate
 - Exit 0: report printed. Exit 2: bad argument or unreadable `--ci-runs` (message on stderr,
   nothing on stdout). Exit 1: I/O or permission problem on the log. A missing log file is not an
   error: the report says `Events: 0` and every metric `keep collecting`.
+- The log must be a regular file: a symlink or other file type is an I/O error (exit 1). Lines are
+  read with a bound; a line over 4096 bytes is drained, never kept.
+- `--since` also limits the failed checks counted from `--ci-runs`. `git log` runs with
+  `--no-show-signature` so a hostile repository config cannot run a program.
 - Writes nothing: no file, no directory. Runs `git` only with read commands and an argument list
   (never a shell).
 
 ## 3. Reading the log
 
 Each line is JSON. A line is **malformed** when it is not a JSON object, is longer than 4096
-bytes, or fails `log_event.validate` after its `ts` key is removed. Malformed lines are counted and
+bytes, or fails `log_event.validate` after its `ts` key is removed, or has no valid `ts`, or holds an
+integer above 10^9, or makes the parser raise (deeply nested JSON, huge numbers). Malformed lines are counted and
 skipped. A slice is the set of events with the same `slice`. A **group key** is
 (producer role, tier, producer model): events of another model never mix, so a model change restarts
 the count (CONCEPT 6.12 rule 6).
@@ -51,6 +56,11 @@ Header `# Retro report <repo> <today>`, then the line
 `Events: <n> (malformed skipped: <m>). Slices: <s>.`, then the sections in this order.
 
 ### 4.1 Cross-check with git
+
+An `Agent` or `Tier` trailer is a message line starting `Agent: ` or `Tier: ` in any paragraph of
+the commit message: the repo footer (`references/commit-trailers.md`) puts them in a paragraph
+before `Co-Authored-By:`, which git's own trailer parser ignores (amended after the first
+real run on this repo: 0 counted instead of 29).
 
 Table `| item | log | git |` with rows, in this order, `pull requests merged` (log: slices with a
 `ship` event; git: commits on `HEAD` whose subject starts `Merge pull request #`), `commits with
