@@ -46,7 +46,7 @@ def rate_files(files, policy, fold=False):
 
     fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
     """
-    key = str.lower if fold else str
+    key = str.lower if fold else (lambda s: s)
     scores = dict.fromkeys(DIMS, 0)
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
@@ -95,6 +95,7 @@ def canonical(name):
         and str(PurePosixPath(name)) == name
         and ".." not in name.split("/")
         and "\\" not in name
+        and name.isascii()  # ſ (U+017F) folds to s on some filesystems, not under str.lower
         and name.isprintable()
     )
 
@@ -112,9 +113,10 @@ def exempt_from_rating(files, policy):
         any(rate_files(files, policy, fold=fold)[0].values()) for fold in (False, True)
     ):
         return False
-    # Binary, mode-only and empty files report 0 changed lines and would slip past the size rule.
+    # Binary, mode-only and empty files, and 0/0 renames, report 0 changed lines and would slip
+    # past the size rule.
     return all(
-        (f["additions"] + f["deletions"] > 0 or f.get("previous"))
+        f["additions"] + f["deletions"] > 0
         and all(
             canonical(name) and any(matches(name, p) for p in paths)
             for name in filter(None, (f["path"], f.get("previous")))

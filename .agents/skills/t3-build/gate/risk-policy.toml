@@ -76,7 +76,8 @@ regression = 2
 reason = "CI, deploy, gate or agent config"
 # Agent config and instruction files steer every session and can hold merge rules.
 paths = [".github/*", "*/Dockerfile*", "*/docker-compose*", "*/deploy/*", "*/infra/*", "*.tf",
-         "*/AGENTS.md", "*/AGENTS.override.md", "*/CLAUDE.md", "*/CLAUDE.local.md", "*/GEMINI.md",
+         "*/AGENTS.md", "*/AGENTS.override.md", "*/AGENT.md", "*/CLAUDE.md", "*/CLAUDE.local.md",
+         "*/GEMINI.md", "*/WARP.md", "*/CRUSH.md", "*/CRUSH.local.md", "*/QWEN.md",
          "*/.claude/*", "*/.codex/*", "*/.opencode/*", "*/.agents/*", "*/.mcp.json"]
 regression = 3
 
