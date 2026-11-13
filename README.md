@@ -88,6 +88,28 @@ The skills and agents are written for a product repository, not for this one. To
 3. Set branch protection: required checks, no admin bypass, no force push.
 4. Tell the lead what to build. It starts with the `project` workflow of `t3-build`: research, questions, spec, one concept approval, then one pull request per milestone.
 
+## Daily use
+
+Call the skill with `/t3-build` in a Claude thread or `$t3-build` in a Codex thread. Start the request with a word that says what kind of change it is. Without a word, the lead picks and says why in one line.
+
+| Start with | Use for | What changes in the run |
+|---|---|---|
+| `fix:` | A bug | A test that reproduces the bug comes first. Done when it passes and nothing else changes |
+| `refactor:` | Same behaviour, better code | Needs a reason (measured cost, blocked feature, repeated bug). Tests pin current behaviour first. Review asks whether behaviour changed. The tier follows the code touched |
+| `docs:` | Documentation only | The lead writes it, every claim is checked against the code. No test author |
+| `feature:` | One feature, about one pull request | The default run |
+| `project:` | A new product or several milestones | Research, questions, spec, one concept approval, then one pull request per milestone |
+
+```
+/t3-build fix: login redirects in a loop after logout
+/t3-build refactor: split the billing module, behaviour must not change
+/t3-build docs: update the install section
+/t3-build feature: add CSV export to the reports page
+/t3-build project: build a habit tracker with email login
+```
+
+All kinds run the same gates: review, security pass, risk gate, and a human merge. `fix:`, `refactor:` and `docs:` are kinds of the `feature` workflow, not separate skills. The skill text that defines them is proposed in `staging/t3-build-kinds.patch`. A human applies it with `git apply staging/t3-build-kinds.patch`, because skills are guardrail files. Until then the lead only knows `feature` and `project`, and the table works as a plain-language hint.
+
 ## Commit messages
 
 Every commit that agents worked on names each agent, model and effort:

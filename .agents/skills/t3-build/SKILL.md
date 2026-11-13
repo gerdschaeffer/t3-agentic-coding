@@ -21,6 +21,19 @@ Pick the workflow and say why in one line; the user can override:
 - **project**: new product, several milestones, or unclear architecture. It plans
   the work, then runs every milestone as a feature run.
 
+A request may start with a word that sets the kind of feature run. Same run, same
+gates; only these steps change:
+- `fix:` bug. Step 4 first writes a test that reproduces the bug and fails for the
+  right reason. AC: the repro passes, nothing else changes.
+- `refactor:` behaviour stays the same. Needs a reason (measured cost, blocked
+  feature, repeated bug); ask for it if missing. Step 4: if coverage is thin, pin
+  today's behaviour with characterisation tests first. Change in small steps, tests
+  green after each. Add to the review brief: "Did behaviour change anywhere?" Tier
+  follows the code touched (auth is T2).
+- `docs:` docs only. A chore: the leader writes it, no test author. Check every
+  claim against the code. Behaviour change in the diff means it is not `docs:`.
+No word: pick by the request and say which in one line.
+
 ## 1. Roles
 
 | Role | Model | Effort |
