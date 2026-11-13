@@ -76,8 +76,8 @@ regression = 2
 reason = "CI, deploy, gate or agent config"
 # Agent config and instruction files steer every session and can hold merge rules.
 paths = [".github/*", "*/Dockerfile*", "*/docker-compose*", "*/deploy/*", "*/infra/*", "*.tf",
-         "*/AGENTS.md", "*/CLAUDE.md", "*/CLAUDE.local.md", "*/.claude/*", "*/.codex/*",
-         "*/.opencode/*", "*/.agents/*", "*/.mcp.json"]
+         "*/AGENTS.md", "*/AGENTS.override.md", "*/CLAUDE.md", "*/CLAUDE.local.md", "*/GEMINI.md",
+         "*/.claude/*", "*/.codex/*", "*/.opencode/*", "*/.agents/*", "*/.mcp.json"]
 regression = 3
 
 # Payments and personal data: fill the paths from the project's threat model, then uncomment

@@ -75,7 +75,11 @@ code. Path rules still hold: auth, secrets, dependencies, migrations and CI neve
 reach the auto lane. Upgrade path: run the rating inside CI and trust only
 `github-actions[bot]`, or restrict the auto lane to a path floor of 0. The
 no-rating exemption trusts the rater login as PR author, the same identity this
-relay risk already covers.
+relay risk already covers. The exemption binds to who opened the PR, not who
+wrote the head commit: a PR branch opened by the rater must not accept pushes
+from others. The agent-instruction filenames in the block rule are a deny list:
+an instruction filename the policy does not know yet, in an exempt folder, would
+merge unreviewed, so keep the `no_rating` list narrow.
 
 ## No-rating list (T0)
 
@@ -96,8 +100,14 @@ paths = ["/CHANGELOG.md", "/docs/user/*.md"]
 - Every file must be on the list, under both names for a rename, and the whole PR
   must rate 0 on every dimension (diff size and file count included). One other
   file, a symlink or a block or security rule hit, and the PR needs a rating.
+  The block rules are also checked case-insensitively for the exemption: an
+  instruction file like `docs/user/claude.md` is never exempt.
+- Every file must change at least one line: a binary, mode-only or empty file
+  (0 changed lines) is not exempt. A pure rename is.
 - The PR author must be the rater login. A PR by anyone else needs a rating.
-- A rating for the head commit, if present, counts as usual.
+- A rating for the head commit, if present, counts as usual. A rating-marker
+  comment by the rater for the head commit, even a malformed one, means the
+  exemption does not apply.
 - The card and the dry run show the reason line
   `no rating needed: only user-documentation files`.
 

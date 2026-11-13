@@ -41,8 +41,12 @@ def matches(path, pattern):
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
-def rate_files(files, policy):
-    """Deterministic floor from changed paths and diff size: (scores, reasons)."""
+def rate_files(files, policy, fold=False):
+    """Deterministic floor from changed paths and diff size: (scores, reasons).
+
+    fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
+    """
+    key = str.lower if fold else str
     scores = dict.fromkeys(DIMS, 0)
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
@@ -56,7 +60,11 @@ def rate_files(files, policy):
             found.append(("regression", 2, f"{f['path']} ({f['link']})"))
         # A rename is rated under both names: moving .github/x away must not escape its floor.
         for path in filter(None, (f["path"], f.get("previous"))):
-            hits = [r for r in policy.get("rule", []) if any(matches(path, p) for p in r["paths"])]
+            hits = [
+                r
+                for r in policy.get("rule", [])
+                if any(matches(key(path), key(p)) for p in r["paths"])
+            ]
             for rule in hits or [policy.get("default", {"regression": 1})]:
                 why = rule.get("reason", "ordinary code")
                 for dim in DIMS:
@@ -100,12 +108,18 @@ def exempt_from_rating(files, policy):
         isinstance(p, str) and p.startswith("/") for p in paths
     ):
         raise SystemExit("policy no_rating is malformed; risk-gate stays pending")
-    if not files or any(rate_files(files, policy)[0].values()):
+    if not files or any(
+        any(rate_files(files, policy, fold=fold)[0].values()) for fold in (False, True)
+    ):
         return False
+    # Binary, mode-only and empty files report 0 changed lines and would slip past the size rule.
     return all(
-        canonical(name) and any(matches(name, p) for p in paths)
+        (f["additions"] + f["deletions"] > 0 or f.get("previous"))
+        and all(
+            canonical(name) and any(matches(name, p) for p in paths)
+            for name in filter(None, (f["path"], f.get("previous")))
+        )
         for f in files
-        for name in filter(None, (f["path"], f.get("previous")))
     )
 
 
@@ -275,6 +289,9 @@ def main():
 
     rating = parse_rating(comments, sha, trusted)
     exempt = exempt_from_rating(files, policy)  # always: it validates the policy
+    marker = f"{RATING_MARK}{sha} -->"
+    if any(c["login"] in trusted and c["body"].startswith(marker) for c in comments):
+        exempt = False  # a rating comment, even a malformed one, may be the rater's veto
     if exempt and rating is None:
         # Fork PRs run too: without a rating only the trusted login may author an exempt PR.
         author = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "author"))
