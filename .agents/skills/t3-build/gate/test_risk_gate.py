@@ -837,15 +837,10 @@ class Amendment(unittest.TestCase):
         self.assertEqual(g.rate_files(many, NR)[0], ZERO, "fixture: below MAX_FILES, 0 lines")
         self.assertIs(g.exempt_from_rating(many, NR), False)
         self.assertEqual(nr_lane(many)[0], "review")
-        # Controls: one changed line is enough, and a pure rename reports 0 and 0.
+        # Controls: one changed line is enough. (0/0 renames: security round 2, see below.)
         for files in (
             [f("CHANGELOG.md", add=1, rem=0)],
             [f("CHANGELOG.md", add=0, rem=1)],
-            [{**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 0}],
-            [
-                {**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 0},
-                f("docs/user/b.md"),
-            ],
         ):
             with self.subTest(files=[(x["path"], x.get("previous")) for x in files], exempt=True):
                 self.assertIs(g.exempt_from_rating(files, NR), True)
@@ -913,6 +908,99 @@ class AmendmentMain(unittest.TestCase):
         }.items():
             with self.subTest(case=label):
                 self.assert_exempt_auto(run_gate(self.DOCS, comments))
+
+
+# WP1 security round 2 amendment (spec 4.2 step 4 and `canonical`, 4.6, AC7, AC14, AC18, AC20).
+
+MORE_INSTRUCTION_FILES = ["AGENT.md", "WARP.md", "CRUSH.md", "CRUSH.local.md", "QWEN.md"]
+NON_ASCII = [
+    "docs/user/AGENTſ.md",  # U+017F LATIN SMALL LETTER LONG S casefolds to "s"
+    "docs/user/AGENTſ.override.md",
+    "docs/user/café.md",  # otherwise harmless: a non-ASCII doc name still needs a rating
+]
+
+
+class AmendmentRound2(unittest.TestCase):
+    def test_non_ascii_names_are_not_exempt(self):  # AC7, AC18
+        project = {**POLICY, "no_rating": {"paths": ["/docs/user/*.md"]}}
+        for name in NON_ASCII:
+            self.assertTrue(g.matches(name, "/docs/user/*.md"), f"fixture: {name} on the list")
+            for policy, label in ((NR, "shipped"), (project, "project")):
+                for files in (
+                    [f(name)],
+                    [f("CHANGELOG.md"), f(name)],
+                    [moved("CHANGELOG.md", name)],
+                    [moved(name, "CHANGELOG.md")],
+                    [moved("docs/user/a.md", name), f("CHANGELOG.md")],
+                ):
+                    with self.subTest(files=[(x["path"], x.get("previous")) for x in files], p=label):
+                        self.assertIs(g.exempt_from_rating(files, policy), False)
+                        result = nr_lane(files, policy=policy)
+                        self.assertNotEqual(result[0], "auto")
+                        self.assertIn(MISSING, result[3])
+                        self.assertNotIn(REASON, result[2])
+        for path in ("CHANGELOG.md", "docs/user/a.md"):
+            for policy, label in ((NR, "shipped"), (project, "project")):
+                if label == "project" and path == "CHANGELOG.md":
+                    continue  # not on the project list
+                with self.subTest(path=path, p=label, exempt=True):
+                    self.assertIs(g.exempt_from_rating([f(path)], policy), True)
+                    self.assertEqual(nr_lane([f(path)], policy=policy)[0], "auto")
+
+    def test_zero_change_renames_are_not_exempt(self):  # AC20 (amended)
+        zero = {**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 0}
+        zero_back = {**moved("docs/user/a.md", "CHANGELOG.md"), "additions": 0, "deletions": 0}
+        for files in (
+            [zero],
+            [zero_back],
+            [zero, f("docs/user/b.md")],
+            [f("docs/user/b.md"), zero],
+        ):
+            with self.subTest(files=[(x["path"], x.get("previous"), x["additions"]) for x in files]):
+                self.assertEqual(g.rate_files(files, NR)[0], ZERO, "fixture: floor zero")
+                self.assertIs(g.exempt_from_rating(files, NR), False)
+                result = nr_lane(files)
+                self.assertEqual(result[0], "review")
+                self.assertIn(MISSING, result[3])
+                self.assertNotIn(REASON, result[2])
+        for files in (
+            [moved("CHANGELOG.md", "docs/user/a.md")],
+            [{**moved("CHANGELOG.md", "docs/user/a.md"), "additions": 0, "deletions": 1}],
+            [moved("docs/user/b.md", "docs/user/a.md"), f("CHANGELOG.md")],
+        ):
+            with self.subTest(files=[(x["path"], x.get("previous")) for x in files], exempt=True):
+                self.assertIs(g.exempt_from_rating(files, NR), True)
+                self.assertEqual(nr_lane(files)[0], "auto")
+
+    def test_more_agent_instruction_files_block(self):  # AC14 (4.6, security round 2)
+        rule = next(r for r in POLICY["rule"] if r.get("reason") == "CI, deploy, gate or agent config")
+        for name in MORE_INSTRUCTION_FILES:
+            with self.subTest(pattern=name):
+                self.assertIn(f"*/{name}", rule["paths"])
+            for path in (name, f"docs/user/{name}", f"a/b/{name}"):
+                for comments in ([rating()], []):
+                    with self.subTest(path=path, rated=bool(comments)):
+                        self.assertEqual(lane([f(path)], comments)[0], "block")
+                        self.assertIs(g.exempt_from_rating([f(path)], NR), False)
+                        self.assertEqual(nr_lane([f(path)], comments)[0], "block")
+        for path in ("docs/user/qwen.md", "docs/user/crush.local.md"):
+            with self.subTest(path=path, fold=True):
+                self.assertEqual(g.rate_files([f(path)], POLICY, fold=True)[0]["regression"], 3)
+                self.assertIs(g.exempt_from_rating([f(path)], NR), False)
+                self.assertNotEqual(nr_lane([f(path)])[0], "auto")
+
+    def test_rate_files_default_does_not_coerce_patterns(self):  # AC18: fold=False as at base
+        bad = {**NR, "rule": POLICY["rule"] + [{"reason": "bad", "paths": [3], "regression": 0}]}
+        # At base (9c48277) matches(path, 3) calls 3.startswith: AttributeError.
+        with self.assertRaises(AttributeError):
+            g.rate_files([f("a.py")], bad)
+        with self.assertRaises(AttributeError):
+            g.rate_files([f("a.py")], bad, fold=False)
+        try:
+            exempt = g.exempt_from_rating([f("CHANGELOG.md")], bad)
+        except Exception:
+            exempt = False  # raising fails closed too
+        self.assertIs(exempt, False)
 
 
 if __name__ == "__main__":
