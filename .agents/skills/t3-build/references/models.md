@@ -21,7 +21,7 @@ The only place that names models (CONCEPT.md section 3). Agent files in `.claude
 | docs-writer | Docs | Claude | claude-haiku-5-5 | low |
 | consultant | Consultant | Claude | claude-opus-5-5 | high |
 | maintainer | Maintainer | Claude | claude-haiku-5-5 (Sonnet on escalation) | low |
-| third-voice | Third voice | OpenRouter | google/gemini-4-hydrogen (placeholder slug) | high |
+| third-voice | Third voice | OpenRouter | google/gemini-4-hydrogen | high |
 | bulk-worker | Bulk worker | OpenRouter | deepseek/deepseek-v4.1-flash-1017 | low |
 
 Flags (the human flips them, via a merged change):
