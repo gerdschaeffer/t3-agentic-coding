@@ -26,6 +26,7 @@ CARD_MARK = "<!-- risk-gate-card -->"
 # GitHub's PR files API returns at most 3000 files; a PR that size cannot be rated fully.
 MAX_FILES = 3000
 NO_RATING_REASON = "no rating needed: only user-documentation files"
+BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")  # allowed names in auto_base_branches
 
 
 def load_policy(path):
@@ -165,8 +166,11 @@ def parse_rating(comments, sha, trusted):
     return None
 
 
-def decide(floor, floor_reasons, rating, policy, draft=False, exempt=False):
-    """Return (lane, scores, reasons, blockers). The rating can raise scores, never lower them."""
+def decide(floor, floor_reasons, rating, policy, draft=False, exempt=False, extra_blockers=()):
+    """Return (lane, scores, reasons, blockers). The rating can raise scores, never lower them.
+
+    extra_blockers: the caller's own reasons against auto (e.g. a base branch that is not allowed).
+    """
     scores, reasons, blockers = dict(floor), list(floor_reasons), []
     if draft:
         blockers.append("draft PR")
@@ -189,6 +193,7 @@ def decide(floor, floor_reasons, rating, policy, draft=False, exempt=False):
             blockers.append(f"disputed findings: {rating['disputed']}")
         if scores["security"] >= 1 and rating.get("security_pass", "").lower() != "clean":
             blockers.append("security pass is not clean")
+    blockers += extra_blockers
     live = policy.get("live", False)
     level = max(scores["regression"], scores["security"], scores["user"] if live else 0)
     lane = "block" if level >= 3 else "review" if level == 2 or blockers else "auto"
@@ -292,7 +297,7 @@ def main():
     # Dry run: the leader's own read-only check. Any workflow can write a commit status,
     # so the leader decides from this, never from the risk-gate status.
     dry = os.environ.get("RISK_GATE_DRY_RUN") == "1"
-    pr_info = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid,isDraft"))
+    pr_info = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid,isDraft,baseRefName"))
     sha = pr_info["headRefOid"]
     # Pending first: the required check stays unmet until this run finishes. Any crash below
     # leaves it pending, so nothing merges on a stale success (fail closed).
@@ -302,6 +307,25 @@ def main():
     # RISK_GATE_POLICY: the leader's dry run reads main's policy without a checkout.
     policy_path = os.environ.get("RISK_GATE_POLICY") or Path(__file__).with_name("risk-policy.toml")
     policy = load_policy(policy_path)
+    # Auto-merge only into allowed bases: a retarget keeps the head SHA, so an auto lane earned
+    # against a stacked base must not carry over (spec 020).
+    bases = policy.get("merge", {}).get("auto_base_branches")
+    if "auto_base_branches" in policy.get("merge", {}) and not (
+        isinstance(bases, list)
+        and bases
+        and all(isinstance(b, str) and BRANCH.fullmatch(b) for b in bases)
+    ):
+        raise SystemExit("policy auto_base_branches is malformed; risk-gate stays pending")
+    base = pr_info.get("baseRefName")
+    default = gh("api", f"repos/{repo}", "--jq", ".default_branch").strip()
+    for what, name in (("base branch", base), ("default branch", default)):
+        if not isinstance(name, str) or name in ("", "null"):  # --jq prints null for a missing key
+            raise SystemExit(f"could not read the {what}; risk-gate stays pending")
+    allowed = bases or [default]
+    base_blockers = (
+        [] if base in allowed
+        else [f"base branch {base} is not an auto-merge branch ({', '.join(allowed)})"]
+    )
     files = [
         {
             "path": f["filename"],
@@ -347,7 +371,12 @@ def main():
         author = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "author"))
         exempt = (author.get("author") or {}).get("login") in trusted
     lane, scores, reasons, blockers = decide(
-        *floor(files, policy), rating, policy, pr_info["isDraft"], exempt=exempt
+        *floor(files, policy),
+        rating,
+        policy,
+        pr_info["isDraft"],
+        exempt=exempt,
+        extra_blockers=base_blockers,
     )
     method = policy.get("merge", {}).get("method", "squash")
     if method not in ("squash", "merge", "rebase"):

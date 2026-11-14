@@ -148,6 +148,20 @@ workflow: publish the required result for the current merge candidate (base and 
 retire head-only successes, use a new required status context in the same change. A new context
 alone does not help: once it has succeeded on an unchanged head, another retarget can reuse it.
 
+## Auto-merge only into the default branch
+
+A PR whose base branch is not the repository's default branch never gets the auto lane: the gate adds
+the blocker `base branch <name> is not an auto-merge branch (<allowed>)` and the lane is `review`
+(in shadow mode the card says `shadow, would be review`). Stacked PRs are merged by the owner, and
+the bottom of the stack lands in the default branch. This also closes the retarget race for the
+common case: a PR that was small against a stacked base is not auto-armed there, so retargeting it
+to the default branch cannot consume an old success.
+
+To allow other bases set `auto_base_branches = ["main", "release/1"]` under `[merge]` in
+`risk-policy.toml`; only the listed names count (the default branch is not implied). A malformed
+list, or an unreadable base or default branch, stops the run with the status pending. The gate reads
+the default branch with one extra `gh api repos/<repo>` call per run.
+
 ## Setup per repository
 
 1. Copy `risk_gate.py`, `risk-policy.toml`, `test_risk_gate.py` to

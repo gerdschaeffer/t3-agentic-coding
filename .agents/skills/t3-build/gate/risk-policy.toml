@@ -20,6 +20,7 @@ small_diff_lines = 200   # more changed lines (added + removed): regression at l
 # method = "squash"            # "squash" (default), "merge" or "rebase"; follow the repo's rule
 # hours = [8, 20]              # auto-merge only from 08:00 to 19:59
 # timezone = "Europe/Berlin"
+# auto_base_branches = ["main"]  # auto-merge only into these branches; default: the repository's default branch
 
 [no_rating]
 # T0: files that may merge without a risk rating. User documentation only: never tests, specs,
