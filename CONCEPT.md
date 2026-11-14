@@ -20,7 +20,7 @@
 5. **Machines check first, models second.** Lint, types, tests, secret scan, dependency scan and static analysis run before any model reviews anything. They are free, fast and never tired.
 6. **Loops have budgets.** Every loop has a round limit, a stop rule and an exit to the human. A used-up budget is never an approval.
 7. **Files, not chat history.** Specs and architecture decisions live in the repository. Task state, review findings and the event log live in a local state folder outside it. Agents have no memory, so every handoff is a self-contained brief.
-8. **The most expensive model works where mistakes are most expensive.** Fable 5.2 does architecture, security and the review of unclear specs. It writes no code.
+8. **The most expensive model works where mistakes are most expensive.** Fable 5.2 does architecture and the review of unclear specs. It writes no code. Security work runs on Opus 5.5, because Fable's cyber safeguards block it.
 9. **The team measures itself.** Every loop leaves one log line. A monthly retro turns the numbers into proposed changes to models, budgets and skills. The human merges them.
 
 ---
@@ -50,12 +50,12 @@ flowchart LR
     H(["Human owner"])
     subgraph CC["Claude Code · Max plan · flat rate"]
         L["Lead<br/>Sonnet 5.5"]
-        A["Architect, spec reviewer, security<br/>Fable 5.2"]
+        A["Architect, spec reviewer<br/>Fable 5.2"]
         T["Test authors<br/>Sonnet 5.5 / Opus 5.5"]
         I["Implementers<br/>Opus 5.5, later Sonnet 5.5"]
         Q["QA and E2E<br/>Sonnet 5.5"]
         S["Scouts, Docs, Maintainer<br/>Haiku 5.5"]
-        C["Consultant<br/>Opus 5.5"]
+        C["Consultant, security<br/>Opus 5.5"]
     end
     subgraph CX["Codex · Pro plan · flat rate"]
         R["Code and security reviewer,<br/>risk rater<br/>GPT-6.1 Sol"]
@@ -89,7 +89,7 @@ flowchart LR
 | 5 | **Test author** | Acceptance tests from the spec, before code exists. Always a separate agent | Claude Sonnet 5.5 (T1), Opus 5.5 for security, state and concurrency (T2) | medium / high | Per slice |
 | 6 | **Implementer** | Smallest complete change that makes the tests pass, for changes above about 20 lines | Claude Opus 5.5 (T1, T2). Sonnet 5.5 for T1 once the replay test passes. Haiku 5.5 (T0) | medium | Per slice |
 | 7 | **Code and security reviewer** | Verdict plus findings with severity. Security review of triggered changes. Risk rating for the gate | Codex GPT-6.1 Sol | medium, high for the security review | Per slice from T1 |
-| 8 | **Security engineer** | Threat model, second security review of triggered changes, milestone audit | Claude Fable 5.2 | high | Inception, T2 changes, before release |
+| 8 | **Security engineer** | Threat model, second security review of triggered changes, milestone audit | Claude Opus 5.5 | high | Inception, T2 changes, before release |
 | 9 | **QA** | Starts the app, runs end-to-end and exploratory checks, collects proof | Claude Sonnet 5.5 | medium | Slices with runtime behaviour, release |
 | 10 | **Scout** | Code search and log reading (no network), or web research (no repository) | Claude Haiku 5.5 | low | On demand |
 | 11 | **Docs writer** | User docs, changelog, runbooks | Claude Haiku 5.5 | low | Per slice, release |
@@ -122,7 +122,7 @@ This is the Pareto rule of the concept. The tier is set once, before work starts
 | Tests | None new | Separate author (Sonnet 5.5) | Separate author (Opus 5.5), test files frozen |
 | Implementer | Haiku 5.5 | Opus 5.5. Sonnet 5.5 once the replay test passes | Opus 5.5 |
 | Code review | None, CI only | Sol, max 3 rounds | Sol, max 3 rounds, up to 5 for security, data loss or concurrency |
-| Security review | Scanners | Scanners | Scanners plus the security pass: Sol and Fable, both clean |
+| Security review | Scanners | Scanners | Scanners plus the security pass: Sol and Opus, both clean |
 | Proof | CI green | CI green plus the behaviour observed once | CI green plus end-to-end proof |
 | Merge lane, set by the risk gate | Auto, without a rating | Auto when every rating is 0 or 1, otherwise review | Usually review: the owner merges. Block for migrations, CI, deployment, infrastructure and agent configuration |
 
@@ -158,7 +158,7 @@ flowchart TD
     B -- no --> T1["T1 Standard"]
     T0 --> R0["Haiku implements<br/>CI is the only gate"]
     T1 --> R1["Short spec, separate tests<br/>Opus implements<br/>Sol reviews"]
-    T2 --> R2["Full spec, separate tests<br/>Opus implements, Sol reviews<br/>Security pass: Sol and Fable"]
+    T2 --> R2["Full spec, separate tests<br/>Opus implements, Sol reviews<br/>Security pass: Sol and Opus"]
     R1 -. "new evidence of risk" .-> T2
 ```
 
@@ -265,7 +265,7 @@ flowchart TD
     A["Human: goals, users, constraints"] --> B["Lead: product brief<br/>with open questions"]
     B --> C["Scouts: research<br/>unknowns and options"]
     C --> D["Architect (Fable): architecture<br/>and decision records"]
-    D --> E["Security (Fable): threat model<br/>and security requirements"]
+    D --> E["Security (Opus): threat model<br/>and security requirements"]
     E --> F["Codex Sol: independent review<br/>of the whole package"]
     F --> G{"Irreversible decision<br/>still disputed?"}
     G -- yes --> H["Third voice (Gemini)<br/>once"]
@@ -440,16 +440,16 @@ Security is layered. No single layer is trusted.
 ```mermaid
 flowchart TD
     subgraph L1["Layer 1 · Design, once per milestone"]
-        TM["Threat model and<br/>security requirements (Fable)"]
+        TM["Threat model and<br/>security requirements (Opus)"]
     end
     subgraph L2["Layer 2 · Every change, automatic"]
         SC["Secret scan, dependency scan,<br/>static analysis, licence check"]
     end
     subgraph L3["Layer 3 · T2 changes"]
-        SR["Security pass: Sol and Fable,<br/>both must be clean"]
+        SR["Security pass: Sol and Opus,<br/>both must be clean"]
     end
     subgraph L4["Layer 4 · Before release"]
-        AU["Milestone audit (Fable)"]
+        AU["Milestone audit (Opus)"]
         SK["Second key: independent<br/>audit pass (Codex Sol)"]
     end
     subgraph L5["Layer 5 · In operation"]
@@ -459,7 +459,7 @@ flowchart TD
     MO -- "new threat or incident" --> TM
 ```
 
-**The security pass.** A change that hits a trigger gets two security reviews after the code review is clean: Sol with a security brief, and Fable with the `security-review` skill. Both must end clean. A security finding of any severity is fixed or goes to the human. It is never declined as a nit and never closed by a used-up budget. Only the human can accept a security risk.
+**The security pass.** A change that hits a trigger gets two security reviews after the code review is clean: Sol with a security brief, and Opus with the `security-review` skill. Both must end clean. A security finding of any severity is fixed or goes to the human. It is never declined as a nit and never closed by a used-up budget. Only the human can accept a security risk.
 
 **Security of the agents themselves** matters as much as security of the product:
 
@@ -818,7 +818,7 @@ The lead posts the reviewer's risk rating under the owner's identity. The gate c
 
 | Decision | Cost of a mistake | Model |
 |---|---|---|
-| Architecture, threat model | Paid in every later slice | Fable 5.2, reviewed by Codex, third voice on dispute |
+| Architecture, threat model | Paid in every later slice | Architecture: Fable 5.2. Threat model: Opus 5.5. Reviewed by Codex, third voice on dispute |
 | Spec of a T2 slice | Wrong feature, security hole | Opus 5.5, reviewed by Codex |
 | Spec of a T1 slice | Wrong feature | Sonnet 5.5. Fable 5.2 reviews it only when the design is unclear |
 | Implementation of a clear T1 spec | Caught by tests and review | Opus 5.5 at the start. Sonnet 5.5 once the replay test passes |
