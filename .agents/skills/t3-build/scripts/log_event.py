@@ -53,7 +53,10 @@ def check(key, v):
         ok = isinstance(v, dict) and set(v) == FINDING_KEYS and all(is_int(n, 0) for n in v.values())
         return None if ok else "findings: must have exactly blocker, should, nit, security, each an integer >= 0"
     if key == "duration":
-        ok = type(v) in (int, float) and math.isfinite(v) and v >= 0
+        try:
+            ok = type(v) in (int, float) and math.isfinite(v) and v >= 0
+        except OverflowError:  # an int too large for a float
+            ok = False
         return None if ok else "duration: must be a finite number >= 0"
     if key in ("tier_raised", "quota_pause"):
         return None if type(v) is bool else f"{key}: must be a boolean"
@@ -137,6 +140,9 @@ def main(argv=None):
         event = json.loads(sys.stdin.read())
     except (ValueError, UnicodeDecodeError) as e:
         print(f"log_event.py: input is not JSON: {e.__class__.__name__}", file=sys.stderr)
+        return 2
+    except RecursionError:
+        print("log_event.py: input is nested too deeply", file=sys.stderr)
         return 2
     try:
         append(root, a.repo, event)

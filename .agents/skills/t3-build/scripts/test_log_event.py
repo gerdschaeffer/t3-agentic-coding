@@ -422,5 +422,54 @@ class AC10Module(Base):
         self.assertRegex(obj["ts"], TS_RE)
 
 
+class FU2Hardening(Base):
+    """Spec 009-fu2-log-event-hardening, AC1, AC2, AC4."""
+
+    DEPTH = 10_000
+    CAUSE = re.compile(r"nest|deep|recurs", re.I)
+
+    def assertRejectedClean(self, *, event=None, stdin=None, names=None, label=""):
+        r = self.assertRejected(event, stdin=stdin, label=label)
+        self.assertNotIn("Traceback", r.stderr, label)
+        if names:
+            self.assertIn(names, r.stderr, label)
+        return r
+
+    def test_fu2_ac1_validate_returns_duration_problem_for_huge_ints(self):
+        m = log_event_mod()
+        for v in (10**400, -10**400, 10**309):
+            with self.subTest(duration=v):
+                got = m.validate(valid(duration=v))
+                self.assertTrue(any("duration" in p for p in got), got)
+
+    def test_fu2_ac3_ints_that_round_to_max_float_stay_valid(self):
+        # review round 1: int(float max) + 1 converts to a finite float, so it was valid before FU2
+        m = log_event_mod()
+        for v in (int(sys.float_info.max), int(sys.float_info.max) + 1, sys.float_info.max):
+            with self.subTest(duration=v):
+                self.assertEqual(m.validate(valid(duration=v)), [])
+
+    def test_fu2_ac1_main_exits_2_for_huge_ints_and_writes_nothing(self):
+        for v in (10**400, -10**400, 10**309):
+            with self.subTest(duration=v):
+                self.assertRejectedClean(event=valid(duration=v), names="duration", label=f"duration {v}")
+
+    def test_fu2_ac2_deeply_nested_arrays_exit_2(self):
+        raw = "[" * self.DEPTH + "]" * self.DEPTH
+        r = self.assertRejectedClean(stdin=raw, label="nested arrays")
+        self.assertRegex(r.stderr, self.CAUSE)
+
+    def test_fu2_ac2_deeply_nested_objects_exit_2(self):
+        raw = '{"a":' * self.DEPTH + "1" + "}" * self.DEPTH
+        r = self.assertRejectedClean(stdin=raw, label="nested objects")
+        self.assertRegex(r.stderr, self.CAUSE)
+
+    def test_fu2_ac4_nested_findings_value_exits_2_at_parse_time(self):
+        nested = "[" * self.DEPTH + "]" * self.DEPTH
+        raw = json.dumps(valid())[:-1] + ', "findings": ' + nested + "}"
+        r = self.assertRejectedClean(stdin=raw, label="nested findings")
+        self.assertRegex(r.stderr, self.CAUSE)
+
+
 if __name__ == "__main__":
     unittest.main()
