@@ -9,17 +9,14 @@ Reads three files, writes nothing. No network, no subprocess. Prints only fixed 
 import argparse
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gate"))  # only this fixed directory
+import risk_gate as gate  # noqa: E402  the audit must read a comment exactly as the gate does
 
 MAX_BYTES = 256 * 1024
 MARKER = re.compile(r"<!-- risk-rating sha=([0-9a-f]{40}) -->")
 SHA = re.compile(r"[0-9a-f]{40}")
-FIELDS = {
-    "verdict": re.compile(r"^verdict: (APPROVE|CHANGES)$", re.M),
-    "regression": re.compile(r"^regression: ([0-3])$", re.M),
-    "security": re.compile(r"^security: ([0-3])$", re.M),
-    "user": re.compile(r"^user: ([0-3])$", re.M),
-    "security_pass": re.compile(r"^security_pass: (clean|n/a)$", re.M),
-}
 VERDICT = re.compile(r"VERDICT: (APPROVE|CHANGES)")
 RISK = re.compile(r"RISK regression=([0-3]) security=([0-3]) user=([0-3])(?: reasons:(?: .*)?)?")  # the brief asks for reasons
 SECURITY = re.compile(r"(?:SECURITY|VERDICT): (CLEAN|FINDINGS)")
@@ -61,14 +58,13 @@ def parse_comment(rows, sha):
         raise Bad("comment: first line is not the risk-rating marker with a 40 hex SHA")
     if sha is not None and m.group(1) != sha:
         raise Bad("comment: marker SHA differs from --sha")
-    text = "\n".join(rows)
-    out = {}
-    for field, pat in FIELDS.items():
-        fm = pat.search(text)
-        if not fm:
-            raise Bad(f"comment: {field} missing or out of range")
-        out[field] = fm.group(1)
-    return out
+    r = gate.parse_rating([{"login": "audit", "body": "\n".join(rows)}], m.group(1), ["audit"])
+    if r is None:
+        raise Bad("comment: a rating field is missing or out of range")
+    if r.get("verdict") not in ("APPROVE", "CHANGES") or r.get("security_pass") not in ("clean", "n/a"):
+        raise Bad("comment: verdict or security_pass has a bad value")
+    return {"verdict": r["verdict"], "security_pass": r["security_pass"],
+            **{d: str(r[d]) for d in RATINGS}}
 
 
 def audit(c, sol_verdict, sol_risk, sol_security):
