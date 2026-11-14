@@ -1464,7 +1464,40 @@ class TestSecondPassR2AC51ExtensionCase(Base):
         r = self.root()
         self.rename(r, "claude/agents/alpha.md", "alpha.MD")
         self.rename(r, "codex/agents/rev.toml", "rev.TOML")
-        self.clean(self.check(r))
+        # FU16 AC1: now exit 1, exactly the extension problem per file.
+        self.problems(self.check(r), rf"{P}claude/agents/alpha\.MD: unexpected extension case",
+                      rf"{P}codex/agents/rev\.TOML: unexpected extension case")
+
+    def test_fu16_ac1_each_upper_case_variant_reports_only_the_extension_problem(self):
+        # FU16 AC1
+        for rel, new_name in (("claude/agents/alpha.md", "alpha.MD"), ("claude/agents/alpha.md", "alpha.Md"),
+                              ("opencode/agents/voice.md", "voice.MD"), ("codex/agents/rev.toml", "rev.TOML"),
+                              ("codex/agents/rev.toml", "rev.Toml")):
+            with self.subTest(file=new_name):
+                r = self.fresh()
+                self.rename(r, rel, new_name)
+                folder = rel.rsplit("/", 1)[0]
+                lines = self.problems(self.check(r), rf"{P}{re.escape(folder)}/{re.escape(new_name)}: "
+                                                     r"unexpected extension case")
+                self.assertEqual(len(lines), 1, lines)
+
+    def test_fu16_ac2_drift_and_unknown_file_also_report_the_extension_problem(self):
+        # FU16 AC2
+        for rel, new_name, model in (("claude/agents/alpha.md", "alpha.MD", "claude-x-1"),
+                                     ("opencode/agents/voice.md", "voice.MD", "openrouter/google/gem-4"),
+                                     ("codex/agents/rev.toml", "rev.TOML", "gpt-z-1"),
+                                     ("codex/agents/rev.toml", "rev.Toml", "gpt-z-1")):
+            with self.subTest(file=new_name):
+                r = self.fresh()
+                f = self.rename(r, rel, new_name)
+                f.write_text(f.read_text().replace(model, "evil-model-1", 1))
+                folder = re.escape(rel.rsplit("/", 1)[0])
+                self.problems(self.check(r), rf"{P}{folder}/{re.escape(new_name)}: unexpected extension case",
+                              rf"{P}{folder}/{re.escape(new_name)}: model evil-model-1 != {re.escape(model)}")
+        r = self.fresh()
+        (r / "claude/agents/EVIL.MD").write_text("---\nname: EVIL\nmodel: claude-evil-9\neffort: low\n---\n")
+        self.problems(self.check(r), rf"{P}claude/agents/EVIL\.MD: unexpected extension case",
+                      rf"{P}claude/agents/EVIL\.MD: no row in models\.md")
 
     def test_new_upper_case_file_is_checked(self):
         for rel, body in (("claude/agents/EVIL.MD", "---\nname: EVIL\nmodel: claude-evil-9\neffort: low\n---\n"),
