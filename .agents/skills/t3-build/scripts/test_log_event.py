@@ -445,7 +445,7 @@ class FU2Hardening(Base):
     def test_fu2_ac1_main_exits_2_for_huge_ints_and_writes_nothing(self):
         for v in (10**400, -10**400, 10**309):
             with self.subTest(duration=v):
-                self.assertRejectedClean(valid(duration=v), names="duration", label=f"duration {v}")
+                self.assertRejectedClean(event=valid(duration=v), names="duration", label=f"duration {v}")
 
     def test_fu2_ac2_deeply_nested_arrays_exit_2(self):
         raw = "[" * self.DEPTH + "]" * self.DEPTH
