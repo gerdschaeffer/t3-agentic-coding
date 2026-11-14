@@ -41,7 +41,9 @@ advisory lookups send package names and versions only. No manifest for an ecosys
 - Command: for each backticked path, command, script or Makefile target and each relative link in
   `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`: `test -e <path>`, the target or script exists in
   the Makefile or package scripts, the link target exists. Read only; run no documented command.
-- Output: per mismatch: file, line, what the doc says, what the code has.
+- Output: per mismatch: file, line, what the doc says, what the code has. A path that the doc says a
+  human installs later (an agents folder, a skills link) or that belongs to the product repo is not
+  a mismatch: report it as `expected: not installed`.
 - Tier rule: a docs-only fix is T0 on the gate's no-rating list, else T1. A doc that disagrees
   with a behaviour (not a name) goes to the lead as a possible bug.
 
