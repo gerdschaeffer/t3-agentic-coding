@@ -28,7 +28,7 @@ README = HERE / "README.md"
 
 def product_layout(folder):
     """AC6: True only in a product repo, where the gate files are copied to .github/risk-gate/."""
-    return folder.name == "risk-gate"
+    return folder.name == "risk-gate" and folder.parent.name == ".github"
 
 
 skip_no_workflow = unittest.skipIf(
@@ -801,7 +801,7 @@ class TestAC6Layout(unittest.TestCase):
     def test_skip_decision(self):
         self.assertTrue(product_layout(Path("/repo/.github/risk-gate")))
         for folder in ("/repo/.agents/skills/t3-build/gate", "/repo/.github/workflows", "/repo/risk-gate-old",
-                       "/repo/risk-gate/sub", "/repo/Risk-Gate"):
+                       "/repo/risk-gate/sub", "/repo/Risk-Gate", "/repo/risk-gate", "/repo/x/risk-gate"):
             with self.subTest(folder=folder):
                 self.assertFalse(product_layout(Path(folder)))
 

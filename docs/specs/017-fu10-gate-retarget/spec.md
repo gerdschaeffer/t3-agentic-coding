@@ -45,7 +45,7 @@ token: it must never check out or run PR code. The change adds one event type an
 `edited` runs; no new input reaches a shell. A PR author can trigger `edited` runs by changing the
 base, which only re-runs the gate (concurrency cancels in-progress runs per PR).
 
-| AC6 | The workflow tests skip only in the product layout: when the test file lives in a folder named `risk-gate` (copied to `.github/risk-gate/`). In this repository's `gate/` folder a missing `risk-gate.yml` is a failure, not a skip. | test |
+| AC6 | The workflow tests skip only in the product layout: when the test file lives in a folder named `risk-gate` whose parent is `.github` (copied to `.github/risk-gate/`). In this repository's `gate/` folder a missing `risk-gate.yml` is a failure, not a skip. | test |
 
 ## Non-goals
 
@@ -58,7 +58,7 @@ Sol security round 1: (1) `!= null` coerces: a retarget away from a branch named
 gate: fixed (comparison with `''`, AC4 fixture); (2) P1, existing gap that this change leaves open: a
 retarget keeps the head SHA, so the old success stands until the new run writes `pending`; an armed
 auto-merge could consume it; GitHub disarms auto-merge on a retarget only for actors without write
-access. Mitigation documented (AC5: disable auto-merge before retargeting). The real fix (bind the
-required gate result to the current base and head, or a new required status context that legacy
-head-only successes cannot satisfy) is **escalated to the human**: it changes `risk_gate.py` and branch
+access. Mitigation documented (AC5: disable auto-merge before retargeting). The real fix (publish the
+required gate result for the current merge candidate, base and head; a new required status context
+retires legacy head-only successes but alone does not bind to the base) is **escalated to the human**: it changes `risk_gate.py` and branch
 protection. (3) The tests no longer skip silently in this repository (AC6).

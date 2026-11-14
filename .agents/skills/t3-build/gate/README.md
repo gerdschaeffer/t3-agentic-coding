@@ -142,9 +142,11 @@ branch named `0`).
 
 Warning: a retarget keeps the head SHA, so the old `risk-gate` success stands until the new run
 writes `pending`. If auto-merge is armed and the actor has write access, it can consume that old
-success in the gap (GitHub disarms auto-merge on a retarget only for actors without write access).
-Disable auto-merge before retargeting a pull request. The structural fix (bind the required result to
-the current base and head, or use a new required status context) is not part of this workflow.
+success in the gap (GitHub documents that it disables auto-merge when someone without write access changes the base).
+Disable auto-merge before retargeting a pull request. The structural fix is not part of this
+workflow: publish the required result for the current merge candidate (base and head), and, to
+retire head-only successes, use a new required status context in the same change. A new context
+alone does not help: once it has succeeded on an unchanged head, another retarget can reuse it.
 
 ## Setup per repository
 
