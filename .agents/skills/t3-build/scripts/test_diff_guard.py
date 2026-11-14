@@ -1212,5 +1212,117 @@ class TestReviewRound1BinaryFromBlobs(Base):
         self.violations(self.guard(r, base, head), type_changed("tests/test_a.py"))
 
 
+# ---------------------------------------------------------------- security round 1 (spec section 17)
+
+from test_check_trailers import (  # noqa: E402  (shared round 1 helpers)
+    HOSTILE_PARENT_ENV, SCRUBBED_ENV, call_run_git, drop_loose, env_stub, group_stub, load_module,
+    promisor_config, require_lazy_fetch)
+
+
+class TestSecurityRound1AC21NoLazyFetch(Base):
+    """AC21: with a tree missing in a promisor repo, diff_guard never runs the promisor's
+    sshCommand (lazy fetch), and exits 2 with a message."""
+
+    def test_missing_tree_no_fetch(self):
+        r, base, head = self.pair({"tests/test_a.py": PY, "src/a.py": SRC},
+                                  {"tests/test_a.py": drop(PY, "        assert x == 3"), "src/a.py": SRC})
+        self.violations(self.guard(r, base, head), shrink("tests/test_a.py", 1, 0))  # fixture is live
+        fired = promisor_config(self, r, self.tmp)
+        drop_loose(self, r, r.raw("rev-parse", f"{head}:tests").decode().strip())
+        require_lazy_fetch(self, r, fired, "diff", "--raw", base, head, "--")
+        for label, env in (("plain env", self.env()), ("parent says GIT_NO_LAZY_FETCH=0", self.env(GIT_NO_LAZY_FETCH="0"))):
+            with self.subTest(env=label):
+                cp = self.guard(r, base, head, env=env)
+                self.assertFalse(fired.exists(), f"{label}: diff_guard ran the promisor sshCommand (lazy fetch)")
+                self.usage_error(cp, label)
+            if fired.exists():
+                fired.unlink()
+
+
+class TestSecurityRound1AC21GitEnvironment(Base):
+    """AC21: run_git drops every GIT_* variable of the parent and sets exactly
+    GIT_TERMINAL_PROMPT=0, GIT_NO_LAZY_FETCH=1 and GIT_OPTIONAL_LOCKS=0; other variables stay."""
+
+    def test_child_environment(self):
+        m = load_module(self, SCRIPT, "diff_guard_round1_env")
+        record = self.tmp / "env.json"
+        stub = env_stub(self.tmp / "git-env-stub", record)
+        result, raised, _, _, _ = call_run_git(m, stub, ["diff", "--raw"], self.tmp, environ=HOSTILE_PARENT_ENV)
+        self.assertIsNone(raised, f"run_git raised {raised!r} on a clean exit")
+        self.assertTrue(record.exists(), "the stub never ran")
+        env = json.loads(record.read_text())
+        self.assertEqual({k: v for k, v in env.items() if k.startswith("GIT_")}, SCRUBBED_ENV)
+        self.assertEqual(env.get("T3_ROUND1_CANARY"), "kept", "non-GIT variables are kept")
+        self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+
+
+PATHSPEC_VARS = ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS")
+GLOB_PATH = "tests/test_[x]*.py"
+
+
+class TestSecurityRound1AC22PathspecEnv(Base):
+    """AC22: a pathspec variable in the parent environment does not stop diff_guard from finding a
+    removed assertion, on a plain path and on a path with glob characters."""
+
+    def fixture(self):
+        removed = drop(PY, "        assert x == 3")
+        r, base, head = self.pair({GLOB_PATH: PY, "tests/test_xa.py": PY, "tests/test_plain.py": PY},
+                                  {GLOB_PATH: removed, "tests/test_xa.py": PY, "tests/test_plain.py": removed})
+        return r, base, head
+
+    def script_diff(self, r, base, head, env):
+        """The per-file diff diff_guard runs (:(literal) pathspecs), with plain git."""
+        return r.raw("diff", "-U0", "-M", "--text", "--no-ext-diff", "--no-textconv", "--no-color", base, head,
+                     "--", ":(literal)" + GLOB_PATH, ":(literal)" + GLOB_PATH, env=env, check=False)
+
+    def test_baseline_without_variables(self):
+        r, base, head = self.fixture()
+        self.violations(self.guard(r, base, head), shrink(GLOB_PATH, 1, 0), shrink("tests/test_plain.py", 1, 0))
+
+    def test_each_variable(self):
+        r, base, head = self.fixture()
+        plain_out = self.script_diff(r, base, head, r.env)
+        self.assertIn(b"-        assert x == 3", plain_out, "fixture: plain git shows the removed assertion")
+        for var in PATHSPEC_VARS:
+            with self.subTest(var=var):
+                if self.script_diff(r, base, head, dict(r.env, **{var: "1"})) == plain_out:
+                    self.skipTest(f"precondition: with {var}=1 this git still honours :(literal), so the "
+                                  "fixture cannot show the bug for this variable")
+                cp = self.guard(r, base, head, env=self.env(**{var: "1"}))
+                self.violations(cp, shrink(GLOB_PATH, 1, 0), shrink("tests/test_plain.py", 1, 0))
+
+
+class TestSecurityRound1AC25ProcessGroup(Base):
+    """AC25: on timeout or output overflow run_git kills git's whole process group; a child that
+    git started is gone afterwards (a zombie counts as alive)."""
+
+    def run_case(self, mode):
+        m = load_module(self, SCRIPT, f"diff_guard_round1_pg_{mode}")
+        pidfile, childfile = self.tmp / "stub.pid", self.tmp / "child.pid"
+        stub = group_stub(self.tmp / f"git-{mode}", pidfile, childfile, mode)
+        result, raised, took, out, _ = call_run_git(m, stub, ["diff", "--raw"], self.tmp, timeout=2)
+        self.assertTrue(pidfile.exists() and childfile.exists(), "the stub never started its child")
+        pid, child = int(pidfile.read_text()), int(childfile.read_text())
+        self.addCleanup(kill_quietly, pid)
+        self.addCleanup(kill_quietly, child)
+        self.assertIsNotNone(raised, f"run_git returned {result!r} instead of failing")
+        self.assertLess(took, 10)
+        self.assertTrue(pid_dead(pid), "git (stub) still alive after run_git")
+        self.assertTrue(pid_dead(child), "git's child still alive after run_git: the process group was not killed")
+        return raised, out
+
+    def test_timeout_kills_the_group(self):
+        raised, out = self.run_case("stall")
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 2)
+            self.assertEqual(out, "")
+
+    def test_overflow_kills_the_group(self):
+        raised, out = self.run_case("flood")
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 1)
+            self.assertIn("too large", out)
+
+
 if __name__ == "__main__":
     unittest.main()

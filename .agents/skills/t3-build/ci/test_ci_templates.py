@@ -1277,5 +1277,62 @@ class TestParserSelfTest(unittest.TestCase):
                 self.assertRaises(SubsetError, parse, bad)
 
 
+# ---------------------------------------------------------------- security round 1 (spec section 17, AC21)
+
+def check_no_lazy_fetch(text, name):
+    """AC21 template part: the guard step (the one that runs the base copy of the script) has
+    GIT_NO_LAZY_FETCH: "1" in its own env:, since its preflight, ls-tree and show run git in a PR checkout."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    run_copy = re.compile(r"python3 " + _v("RUNNER_TEMP") + "/" + re.escape(GUARDS[name]) + '"')
+    steps = [s for j in jobs_of(doc).values() for s in steps_of(j)
+             if isinstance(s.get("run"), str) and run_copy.search(s["run"])]
+    if len(steps) != 1:
+        return [f"want one guard step that runs the base copy, found {len(steps)}"]
+    env = steps[0].get("env")
+    value = env.get("GIT_NO_LAZY_FETCH") if isinstance(env, dict) else None
+    if value != "1":
+        p.append(f"guard step env GIT_NO_LAZY_FETCH is {value!r}, not \"1\"")
+    return p
+
+
+class TestSecurityRound1AC21Templates(TempCase):
+    def test_static(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(check_no_lazy_fetch(read(self, n), n), [])
+
+    def test_static_mutations(self):
+        def env_line(t):
+            m = re.search(r'(?m)^( *)GIT_NO_LAZY_FETCH:[^\n]*\n', t)
+            if not m:
+                raise AssertionError("mutation anchor: no GIT_NO_LAZY_FETCH line")
+            return m
+
+        def moved_to_other_step(t, n):
+            m = env_line(t)
+            t = t[:m.start()] + t[m.end():]
+            return add_step(t, "- env:", '    GIT_NO_LAZY_FETCH: "1"', "  run: true")
+
+        TestAC19GuardSteps.assert_mutations(self, check_no_lazy_fetch, [
+            ("deleted", lambda t, n: del_line(t, r"GIT_NO_LAZY_FETCH:")),
+            ("set to 0", lambda t, n: sub1(t, r'(GIT_NO_LAZY_FETCH:) *"?1"?', r'\1 "0"')),
+            ("set to empty", lambda t, n: sub1(t, r'(GIT_NO_LAZY_FETCH:) *"?1"?', r'\1 ""')),
+            ("key renamed", lambda t, n: sub1(t, r"GIT_NO_LAZY_FETCH:", "GIT_NO_LAZY_FETCHX:")),
+            ("moved to another step", moved_to_other_step),
+        ])
+
+    def test_checker_self_test(self):
+        # Independent of the real templates: a minimal guard step with and without the variable.
+        def doc(env_lines):
+            return ("name: diff-guard\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  diff-guard:\n"
+                    "    runs-on: ubuntu-latest\n    steps:\n      - env:\n          BASE_SHA: x\n" + env_lines +
+                    '        run: |\n          python3 "$RUNNER_TEMP/diff_guard.py" --base "$BASE_SHA"\n')
+        self.assertEqual(check_no_lazy_fetch(doc('          GIT_NO_LAZY_FETCH: "1"\n'), "diff-guard"), [])
+        self.assertNotEqual(check_no_lazy_fetch(doc(""), "diff-guard"), [])
+        self.assertNotEqual(check_no_lazy_fetch(doc('          GIT_NO_LAZY_FETCH: "0"\n'), "diff-guard"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

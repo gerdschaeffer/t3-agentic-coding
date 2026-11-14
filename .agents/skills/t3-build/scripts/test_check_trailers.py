@@ -796,5 +796,257 @@ class TestAC20RunGit(Base):
         self.assertIsNotNone(raised, "MAX_BYTES + 1 accepted")
 
 
+# ---------------------------------------------------------------- security round 1 (spec section 17)
+# Shared with test_diff_guard.py (imported there): promisor fixture, environment and process-group stubs.
+
+from unittest import mock  # noqa: E402
+
+SCRUBBED_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1", "GIT_OPTIONAL_LOCKS": "0"}
+HOSTILE_PARENT_ENV = {
+    "GIT_DIR": "/nonexistent/elsewhere.git", "GIT_WORK_TREE": "/nonexistent", "GIT_INDEX_FILE": "/nonexistent/index",
+    "GIT_OBJECT_DIRECTORY": "/nonexistent/objects", "GIT_CONFIG_PARAMETERS": "'core.sshcommand'='/bin/false'",
+    "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.pager", "GIT_CONFIG_VALUE_0": "/bin/false",
+    "GIT_NO_LAZY_FETCH": "0", "GIT_OPTIONAL_LOCKS": "1", "GIT_TERMINAL_PROMPT": "1",
+    "GIT_LITERAL_PATHSPECS": "1", "GIT_SSH_COMMAND": "/bin/false", "GIT_EXTERNAL_DIFF": "/bin/false",
+    "GIT_TRACE": "1", "T3_ROUND1_CANARY": "kept",
+}
+
+
+def load_module(test, script, name):
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    spec = importlib.util.spec_from_file_location(name, script)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def call_run_git(m, stub, args, repo, max_bytes=100_000, timeout=2, environ=None):
+    """m.run_git with GIT=stub, in this process (optionally under a patched os.environ)."""
+    m.GIT, m.MAX_BYTES, m.GIT_TIMEOUT = str(stub), max_bytes, timeout
+    out, err = io.StringIO(), io.StringIO()
+    result, raised = None, None
+    t0 = time.monotonic()
+    with mock.patch.dict(os.environ, environ or {}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            result = m.run_git(list(args), str(repo))
+        except BaseException as e:  # SystemExit or the script's own error type
+            raised = e
+    return result, raised, time.monotonic() - t0, out.getvalue(), err.getvalue()
+
+
+def env_stub(path, record):
+    """A `git` that records its environment as JSON and exits 0 with no output."""
+    path.write_text(f"#!{sys.executable}\nimport json, os\n"
+                    f"json.dump(dict(os.environ), open({str(record)!r}, 'w'))\n")
+    path.chmod(0o755)
+    return path
+
+
+def group_stub(path, pidfile, childfile, mode):
+    """A `git` that forks a sleeping child (pid written to childfile), then stalls or floods.
+
+    The child stays in git's process group and holds git's stdout open, so only a kill of the whole
+    group ends it."""
+    assert mode in ("stall", "flood"), mode
+    tail = ("chunk = b'x' * 65536\ntry:\n    while True:\n        sys.stdout.buffer.write(chunk)\n"
+            "        sys.stdout.buffer.flush()\nexcept OSError:\n    time.sleep(60)\n") if mode == "flood" \
+        else "time.sleep(60)\n"
+    path.write_text(f"#!{sys.executable}\nimport os, sys, time\n"
+                    f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+                    "child = os.fork()\n"
+                    "if child == 0:\n    time.sleep(60)\n    os._exit(0)\n"
+                    f"with open({str(childfile)!r}, 'w') as f:\n    f.write(str(child))\n" + tail)
+    path.chmod(0o755)
+    return path
+
+
+def promisor_config(test, repo, marker_dir):
+    """AC21 fixture config: a partial clone whose promisor remote is reached through a marker sshCommand."""
+    marker = marker_dir / "ssh-marker.sh"
+    fired = marker_dir / "ssh-fired"
+    marker.write_text(f"#!/bin/sh\necho \"$@\" > '{fired}'\nexit 128\n")
+    marker.chmod(0o755)
+    for k, v in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
+                 ("remote.origin.promisor", "true"), ("remote.origin.url", "ssh://example.invalid/r"),
+                 ("core.sshCommand", str(marker))):
+        repo.git("config", k, v)
+    return fired
+
+
+def drop_loose(test, repo, sha):
+    p = repo.path / ".git" / "objects" / sha[:2] / sha[2:]
+    test.assertTrue(p.is_file(), f"fixture: object {sha} is not a loose object")
+    p.unlink()
+    cp = subprocess.run([REAL_GIT, "-C", str(repo.path), "cat-file", "-e", sha],
+                        env=dict(repo.env, GIT_NO_LAZY_FETCH="1"), capture_output=True)
+    test.assertNotEqual(cp.returncode, 0, f"fixture: object {sha} is still readable")
+
+
+def require_lazy_fetch(test, repo, fired, *git_args):
+    """Precondition: plain git with this config (no scrubbing) runs the marker for `git_args`."""
+    repo.git(*git_args, check=False)
+    if not fired.exists():
+        test.skipTest(f"precondition: plain git ({REAL_GIT}) did not attempt a lazy fetch for {git_args[0]}; "
+                      "the AC21 fixture cannot show the bug with this git")
+    fired.unlink()
+
+
+class TestSecurityRound1AC21NoLazyFetch(Base):
+    """AC21: with a parent commit missing in a promisor repo, check_trailers never runs the
+    promisor's sshCommand (lazy fetch), and exits 2 with a message."""
+
+    def fixture(self):
+        r, base, head, shas = self.branch_repo(GOOD, GOOD, GOOD)
+        fired = promisor_config(self, r, self.tmp)
+        # The base is the parent of the first branch commit. git 2.56 does not lazy-fetch a parent met
+        # inside the walk ("revision walk setup failed"), but it does fetch a missing revision argument.
+        drop_loose(self, r, base)
+        require_lazy_fetch(self, r, fired, "log", "--format=%H", f"{base}..{head}", "--")
+        return r, base, head, fired
+
+    def test_missing_parent_commit_no_fetch(self):
+        r, base, head, fired = self.fixture()
+        for label, env in (("plain env", self.env()), ("parent says GIT_NO_LAZY_FETCH=0", self.env(GIT_NO_LAZY_FETCH="0"))):
+            with self.subTest(env=label):
+                cp = self.check(r, base, head, env=env)
+                self.assertFalse(fired.exists(), f"{label}: check_trailers ran the promisor sshCommand (lazy fetch)")
+                self.usage_error(cp, label)
+            if fired.exists():
+                fired.unlink()
+
+
+class TestSecurityRound1AC21GitEnvironment(Base):
+    """AC21: run_git drops every GIT_* variable of the parent and sets exactly
+    GIT_TERMINAL_PROMPT=0, GIT_NO_LAZY_FETCH=1 and GIT_OPTIONAL_LOCKS=0; other variables stay."""
+
+    def test_child_environment(self):
+        m = load_module(self, SCRIPT, "check_trailers_round1_env")
+        record = self.tmp / "env.json"
+        stub = env_stub(self.tmp / "git-env-stub", record)
+        result, raised, _, _, _ = call_run_git(m, stub, ["log", "--format=%H"], self.tmp, environ=HOSTILE_PARENT_ENV)
+        self.assertIsNone(raised, f"run_git raised {raised!r} on a clean exit")
+        self.assertTrue(record.exists(), "the stub never ran")
+        env = json.loads(record.read_text())
+        self.assertEqual({k: v for k, v in env.items() if k.startswith("GIT_")}, SCRUBBED_ENV)
+        self.assertEqual(env.get("T3_ROUND1_CANARY"), "kept", "non-GIT variables are kept")
+        self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+
+
+class TestSecurityRound1AC25ProcessGroup(Base):
+    """AC25: on timeout or output overflow run_git kills git's whole process group; a child that
+    git started is gone afterwards (a zombie counts as alive)."""
+
+    def run_case(self, mode):
+        m = load_module(self, SCRIPT, f"check_trailers_round1_pg_{mode}")
+        pidfile, childfile = self.tmp / "stub.pid", self.tmp / "child.pid"
+        stub = group_stub(self.tmp / f"git-{mode}", pidfile, childfile, mode)
+        result, raised, took, out, _ = call_run_git(m, stub, ["log", "--format=%H"], self.tmp, timeout=2)
+        self.assertTrue(pidfile.exists() and childfile.exists(), "the stub never started its child")
+        pid, child = int(pidfile.read_text()), int(childfile.read_text())
+        self.addCleanup(kill_quietly, pid)
+        self.addCleanup(kill_quietly, child)
+        self.assertIsNotNone(raised, f"run_git returned {result!r} instead of failing")
+        self.assertLess(took, 10)
+        self.assertTrue(pid_dead(pid), "git (stub) still alive after run_git")
+        self.assertTrue(pid_dead(child), "git's child still alive after run_git: the process group was not killed")
+        return raised, out
+
+    def test_timeout_kills_the_group(self):
+        raised, out = self.run_case("stall")
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 2)
+            self.assertEqual(out, "")
+
+    def test_overflow_kills_the_group(self):
+        raised, out = self.run_case("flood")
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 1)
+            self.assertIn("too large", out)
+
+
+class TestSecurityRound1AC26RawMessage(Base):
+    """AC26: the message comes from the raw commit object (`git cat-file commit <sha>`); a NUL
+    fails the commit (`message contains NUL`); the 64 KB limit counts raw message bytes; `git log`
+    only lists shas (`--format=%H`)."""
+
+    def literal_commit(self, message, encoding=None):
+        """A commit on agent/x made with hash-object --literally (git's checks would refuse a NUL)."""
+        r = self.new_repo()
+        base = r.commit("Base without trailers\n")
+        tree = r.git("rev-parse", "HEAD^{tree}")
+        stamp = "1767614400 +0000"
+        head = (f"tree {tree}\nparent {base}\nauthor Fixture <fixture@example.invalid> {stamp}\n"
+                f"committer Fixture <fixture@example.invalid> {stamp}\n")
+        if encoding:
+            head += f"encoding {encoding}\n"
+        sha = r.git("hash-object", "-t", "commit", "-w", "--literally", "--stdin", input=head.encode() + b"\n" + message)
+        self.assertRegex(sha, r"^[0-9a-f]{40}$")
+        r.git("update-ref", "refs/heads/agent/x", sha)
+        raw = subprocess.run([REAL_GIT, "-C", str(r.path), "cat-file", "commit", sha], env=r.env,
+                             capture_output=True, check=True).stdout
+        self.assertEqual(raw.split(b"\n\n", 1)[1], message, "fixture: raw message differs")
+        return r, base, sha
+
+    def percent_b(self, r, base, sha):
+        out = subprocess.run([REAL_GIT, "-C", str(r.path), "log", "-z", "--format=%H%x1f%B", f"{base}..{sha}", "--"],
+                             env=r.env, capture_output=True, check=True).stdout
+        return out.split(b"\x1f", 1)[1]
+
+    def test_nul_then_70000_bytes_fails(self):
+        msg = f"Subject\n\n{AGENT}\nTier: T2\n".encode() + b"\0" + b"y" * 70_000
+        r, base, sha = self.literal_commit(msg)
+        self.assertLess(len(self.percent_b(r, base, sha)), 1000, "fixture: %B is expected to stop at the NUL")
+        cp = self.check(r, base, "agent/x")
+        self.assertEqual(cp.returncode, 1, f"exit {cp.returncode}; stdout={cp.stdout!r}; stderr={cp.stderr!r}")
+        lines = cp.stdout.splitlines()
+        self.assertEqual(lines[-1], summary(1, 1), cp.stdout)
+        self.assertIn(lines[0], (f"{sha[:12]}: message contains NUL", f"{sha[:12]}: message too large"), cp.stdout)
+
+    def test_small_message_with_nul_fails(self):
+        msg = f"Subject\n\n{AGENT}\nTier: T2\n".encode() + b"\0hidden tail\n"
+        r, base, sha = self.literal_commit(msg)
+        self.fails(self.check(r, base, "agent/x"), {sha: "message contains NUL"}, 1)
+
+    def test_nul_before_the_trailers_fails(self):
+        msg = b"Subject\0\n\n" + f"{AGENT}\nTier: T2\n".encode()
+        r, base, sha = self.literal_commit(msg)
+        self.fails(self.check(r, base, "agent/x"), {sha: "message contains NUL"}, 1)
+
+    def test_limit_counts_raw_bytes_not_reencoded(self):
+        # 40,000 Latin-1 bytes are 80,000 bytes once git log re-encodes them to UTF-8 for %B.
+        msg = b"Subject\n\n" + b"\xe9" * 40_000 + b"\n\n" + f"{AGENT}\nTier: T2\n".encode()
+        r, base, sha = self.literal_commit(msg, encoding="ISO-8859-1")
+        self.assertGreater(len(self.percent_b(r, base, sha)), 64 * 1024, "fixture: %B is expected to re-encode")
+        self.assertLess(len(msg), 64 * 1024)
+        self.passes(self.check(r, base, "agent/x"), 1)
+
+    def test_raw_message_over_64_kb_fails(self):
+        msg = f"Subject\n\n{AGENT}\nTier: T2\n\n".encode() + b"z" * (64 * 1024)
+        r, base, sha = self.literal_commit(msg)
+        self.fails(self.check(r, base, "agent/x"), {sha: "message too large"}, 1)
+
+    def test_log_lists_shas_and_cat_file_reads_messages(self):
+        r, base, head, shas = self.branch_repo(GOOD, "Work\n\nTier: T1\n")
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        log = self.tmp / "calls.jsonl"
+        g = bin_ / "git"
+        g.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                     f"with open({str(log)!r}, 'a') as f:\n"
+                     "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                     f"os.execv({REAL_GIT!r}, [{REAL_GIT!r}] + sys.argv[1:])\n")
+        g.chmod(0o755)
+        cp = self.check(r, base, head, env=self.env(PATH=f"{bin_}{os.pathsep}{os.environ.get('PATH', '')}"))
+        self.fails(cp, {shas[1]: "missing Agent line"}, 2)
+        calls = [json.loads(l)[2 + len(FLAGS):] for l in log.read_text().splitlines()]
+        logs = [c for c in calls if c and c[0] == "log"]
+        self.assertTrue(logs, calls)
+        for c in logs:
+            formats = [a for a in c if a.startswith(("--format", "--pretty"))]
+            self.assertEqual(formats, ["--format=%H"], f"log asks for more than shas: {c}")
+        for sha in shas:
+            self.assertIn(["cat-file", "commit", sha], calls, f"no `cat-file commit {sha}` call")
+
+
 if __name__ == "__main__":
     unittest.main()

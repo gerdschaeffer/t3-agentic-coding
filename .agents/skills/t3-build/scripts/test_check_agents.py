@@ -593,5 +593,152 @@ class TestReviewRound1RootSymlink(Base):
         self.clean(self.check(self.root()))
 
 
+# ---------------------------------------------------------------- security round 1 (spec section 17)
+
+import time  # noqa: E402  (used by the round 1 classes only)
+
+
+def sized_models(size):
+    """MODELS padded with plain text lines after the table to exactly `size` bytes."""
+    body = MODELS.encode()
+    fill = size - len(body)
+    assert fill > 1, fill
+    tail = ("p" * 99 + "\n") * ((fill - 1) // 100)
+    tail += "r" * (fill - len(tail) - 1) + "\n"
+    data = body + tail.encode()
+    assert len(data) == size, len(data)
+    return data
+
+
+class TestSecurityRound1AC23ModelsFile(Base):
+    """AC23: --models is opened like an agent file: O_NOFOLLOW | O_NONBLOCK, a regular file
+    (fstat), at most MAX_MODELS_BYTES = 1_000_000 bytes."""
+
+    def run_bounded(self, models, timeout=10):
+        """The script with a short timeout; a hang is a failure, not an error."""
+        self.assertTrue(SCRIPT.is_file(), f"script missing: {SCRIPT}")
+        try:
+            root = self.tmp / "root" if (self.tmp / "root").is_dir() else self.root()
+            return subprocess.run([sys.executable, str(SCRIPT), "--root", str(root), "--models", str(models)],
+                                  cwd=str(self.cwd), env=self.env(), capture_output=True, text=True,
+                                  errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.fail(f"check_agents hung for {timeout} s on --models {models.name}")
+
+    def test_constant(self):
+        import importlib.util
+        sys.dont_write_bytecode = True  # loading the module must leave no __pycache__
+        self.assertTrue(SCRIPT.is_file(), f"script missing: {SCRIPT}")
+        spec = importlib.util.spec_from_file_location("check_agents_under_test", SCRIPT)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        self.assertEqual(getattr(m, "MAX_MODELS_BYTES", None), 1_000_000)
+
+    def test_normal_file_passes(self):
+        self.clean(self.run_bounded(self.models()))
+
+    def test_symlinked_models_file_exit_2(self):
+        target = self.models(name="real-models.md")
+        self.clean(self.run_bounded(target))  # fixture: the target itself is a valid models file
+        link = self.tmp / "models-link.md"
+        link.symlink_to(target)
+        self.usage_error(self.run_bounded(link), "symlinked models file")
+
+    def test_symlink_to_models_in_a_folder_exit_2(self):
+        # The default path form (<dir>/models.md) with the file itself a symlink.
+        d = self.tmp / "refs"
+        d.mkdir()
+        target = self.models(name="elsewhere.md")
+        (d / "models.md").symlink_to(target)
+        self.usage_error(self.run_bounded(d / "models.md"), "symlinked models.md")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+    def test_fifo_models_file_exit_2_without_hang(self):
+        fifo = self.tmp / "models.fifo"
+        os.mkfifo(fifo)
+        t0 = time.monotonic()
+        cp = self.run_bounded(fifo)
+        self.assertLess(time.monotonic() - t0, 5, "the FIFO was waited on")
+        self.usage_error(cp, "FIFO models file")
+
+    def test_one_byte_over_the_limit_is_too_large(self):
+        p = self.tmp / "big-models.md"
+        p.write_bytes(sized_models(1_000_001))
+        cp = self.run_bounded(p)
+        self.assertEqual(cp.returncode, 1, f"exit {cp.returncode}; stdout={cp.stdout[-500:]!r}; stderr={cp.stderr!r}")
+        lines = cp.stdout.splitlines()
+        self.assertTrue(any(l.startswith("too large: ") for l in lines), f"no `too large:` line: {cp.stdout!r}")
+        self.assertNotIn("files match models.md", cp.stdout)
+
+    def test_exactly_the_limit_passes(self):
+        p = self.tmp / "full-models.md"
+        p.write_bytes(sized_models(1_000_000))
+        self.clean(self.run_bounded(p))
+
+
+class TestSecurityRound1AC24FrontMatterKeys(Base):
+    """AC24: a top-level front-matter key must match ^[A-Za-z_][A-Za-z0-9_-]*$; any other key
+    makes the file unparsable (exit 1, one line). Duplicate detection is exact-match on the key."""
+
+    KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
+    BAD_KEYS = ['"model"', "'model'", '"x"', "my key", "model ", "ke\x01y", "ke\x00y", "ke\x1b[2Ky",
+                "9lives", "-dash", "k.y", "kéy", "k/y"]
+
+    def add_after(self, r, rel, anchor, line):
+        f = r / rel
+        text = f.read_text()
+        self.assertIn(anchor, text)
+        f.write_text(text.replace(anchor, anchor + line, 1))
+
+    def test_bad_key_list_is_outside_the_key_regex(self):
+        for k in self.BAD_KEYS:
+            self.assertIsNone(self.KEY.fullmatch(k), k)
+
+    def test_quoted_model_after_model_is_unparsable_claude(self):
+        r = self.root()
+        self.add_after(r, "claude/agents/alpha.md", "model: claude-x-1\n", '"model": evil\n')
+        self.problems(self.check(r), rf"{P}claude/agents/alpha\.md: unparsable \(.+\)")
+
+    def test_quoted_model_after_model_is_unparsable_opencode(self):
+        r = self.root()
+        self.add_after(r, "opencode/agents/voice.md", "model: openrouter/google/gem-4\n", '"model": evil\n')
+        self.problems(self.check(r), rf"{P}opencode/agents/voice\.md: unparsable \(.+\)")
+
+    def test_single_quoted_effort_is_unparsable(self):
+        r = self.root()
+        self.add_after(r, "claude/agents/alpha.md", "effort: high\n", "'effort': low\n")
+        self.problems(self.check(r), rf"{P}claude/agents/alpha\.md: unparsable \(.+\)")
+
+    def test_each_bad_key_is_unparsable(self):
+        for i, key in enumerate(self.BAD_KEYS):
+            for prov, rel, anchor in (("claude", "claude/agents/alpha.md", "effort: high\n"),
+                                      ("opencode", "opencode/agents/voice.md", "mode: subagent\n")):
+                with self.subTest(key=key, provider=prov):
+                    shutil.rmtree(self.tmp / "root", ignore_errors=True)
+                    r = self.root()
+                    self.add_after(r, rel, anchor, f"{key}: value\n")
+                    cp = self.check(r)
+                    self.problems(cp, rf"{P}{re.escape(rel)}: unparsable \(.+\)")
+                    self.assertTrue(printable_only(cp.stdout), repr(cp.stdout))
+
+    def test_valid_key_forms_pass(self):
+        r = self.root()
+        self.add_after(r, "claude/agents/alpha.md", "effort: high\n",
+                       "allowed-tools: Read\n_private: x\nKey2: y\nmodel_x: z\nA: b\n")
+        self.add_after(r, "opencode/agents/voice.md", "mode: subagent\n", "temperature: 0\nx-y_z: 1\n")
+        self.clean(self.check(r))
+
+    def test_duplicate_detection_is_exact_match(self):
+        # `Model` is another key, not a duplicate of `model`; the model check reads `model`.
+        r = self.root()
+        self.add_after(r, "claude/agents/alpha.md", "model: claude-x-1\n", "Model: claude-wrong\n")
+        self.clean(self.check(r))
+
+    def test_exact_duplicate_still_unparsable(self):
+        r = self.root()
+        self.add_after(r, "claude/agents/alpha.md", "model: claude-x-1\n", "model: claude-x-1\n")
+        self.problems(self.check(r), rf"{P}claude/agents/alpha\.md: unparsable \(.+\)")
+
+
 if __name__ == "__main__":
     unittest.main()
