@@ -15,7 +15,8 @@ message on stderr).
 Limits: this is a heuristic, not proof. False positives: an assertion moved to another file, a test
 file renamed to a non-test name, a removed fixture under tests/, an assertion rewritten into a
 helper. Any qualifying spec change, however small or unrelated, authorizes every finding; the human
-decides whether it is relevant. False negatives: an equal-count rewrite (`assert x == 1` to
+decides whether it is relevant. The risk gate rates a spec change, and a change to an existing
+test file, regression 2 (review lane), so the pull request reaches a human. False negatives: an equal-count rewrite (`assert x == 1` to
 `assert True`), an assertion style the table does not list, test logic weakened without touching
 assertion lines. Two paths that differ only by case are not handled specially. The human reviews
 the diff in every case.

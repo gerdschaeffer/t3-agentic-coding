@@ -1944,5 +1944,18 @@ class TestFU9AC4ReadmeSharedCheckRuns(unittest.TestCase):
                 self.assertNotEqual(bad, ok)
                 self.assertNotEqual(self.problems(bad), [], f"the checker missed: {label}")
 
+
+class TestFU15ReadmeSpecRates2(unittest.TestCase):
+    """Spec 022 AC8: the README says a spec change rates 2 in the gate."""
+
+    def test_readme_says_a_spec_change_rates_2(self):
+        paras = re.split(r"\n\s*\n|\n(?=\s*- )", README.read_text())
+        self.assertTrue(
+            any(re.search(r"(?i)\bspecs?\b", s) and re.search(r"(?i)\b(rates?|regression) 2\b", s)
+                and re.search(r"(?i)\bgate\b", s) for s in paras),
+            "no README paragraph or bullet says a spec change rates 2 in the gate",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

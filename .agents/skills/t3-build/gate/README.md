@@ -36,9 +36,9 @@ recipe the branch cannot change (e.g. `make -f <(git show origin/main:Makefile)`
 
 | Level | Regression | Security | User impact (only when `live = true`) |
 |---|---|---|---|
-| 0 | docs, comments, tests only | no security trigger touched | not reachable by users (internal, tests, flag off) |
+| 0 | docs, comments, new test files only | no security trigger touched | not reachable by users (internal, tests, flag off) |
 | 1 | small change, changed lines covered by tests, no interface change | trigger touched only by additive hardening; both security reviews clean | user-visible but behind a flag or progressive rollout, reversible |
-| 2 | public interface change, shared module with many callers, large diff, weak coverage, removed tests, dependency or config change | authn/authz, permissions, tenant or customer data, secrets, crypto, input parsing at a trust boundary, new dependency | user-visible without a flag, critical journey (login, payment, export), performance-sensitive path |
+| 2 | public interface change, shared module with many callers, large diff, weak coverage, removed tests, a change to a spec or runbook, a change to an existing test file, dependency or config change | authn/authz, permissions, tenant or customer data, secrets, crypto, input parsing at a trust boundary, new dependency | user-visible without a flag, critical journey (login, payment, export), performance-sensitive path |
 | 3 | schema or data migration, CI/deploy/gate config | open security finding, exposed secret, permission model change | irreversible effects (emails, deletions, billing) or the error budget is burning |
 
 ## How the rating gets in
@@ -129,6 +129,40 @@ that has the list; they are not covered by the dated decision above):
   to draft or close it.
 - The case check (the exemption and the floor) lowercases rule patterns. A character range that spans cases
   (`[A-_]`) is not folded correctly; write such patterns without it.
+
+## Specs, runbooks and changed tests
+
+Rule `specs and runbooks` (regression 2): `docs/specs/*`, `docs/*/spec.md`, `docs/*.spec.md` (the
+spec patterns of `diff_guard`), `runbooks/*` and `runbook*.md`. Rule key `existing_changed = N` on
+the `tests` rule: a test file the PR changes, removes or renames (any file status except `added`)
+rates regression N, in the exact and in the case-folded pass, and for the old name of a rename.
+Why: `diff_guard` passes a removed test or a shrinking assertion with a notice when the diff also
+changes a spec, so a weakening could be laundered through a spec or an edited test and still rate 0.
+
+The gate reads each file's `status` from the GitHub files API in `main`. A file without a `status`
+key (callers such as `tier.py`, which tiers before any diff exists, and unit tests) counts as not
+changed; `main` maps a missing or null `status` to `unknown`, which counts as changed, so a response
+without the field fails closed.
+
+Two fold rules keep the floor from being dodged by a name (Sol security pass, spec 022). The
+case-folded pass is the higher of two keyings, `lower()` and NFKC plus `casefold()` (NFKC alone can
+lower a floor: it composes `N` and U+0303 into `Ñ`), so `docs/ſpecs/x.md`
+(U+017F) is the spec directory on a case-folding checkout and rates like `docs/specs/x.md`; the
+exact pass is unchanged. And `main` lists the head tree and marks an `added` file `case collision`,
+which `existing_changed` rates as a changed file, when its name is non-ASCII, when the tree holds
+any non-ASCII path, or when another tree path has the same `lower()` name (a `tests/test_login.py`
+next to `tests/test_Login.py` replaces it on a case-insensitive checkout). The aliases a filesystem
+applies (Unicode normalisation, ignorable characters such as U+200C on HFS+, upcase tables) cannot
+be listed, so the rule is conservative: in a repository with any non-ASCII file name, a new test file
+goes to the review lane. Not detected: ASCII aliases other than case (Windows 8.3 short names;
+git's `core.protectNTFS` rejects trailing dots and spaces, but its short-name checks cover only Git
+metadata names, so an arbitrary 8.3 alias is not refused). A lookalike that no
+fold maps (Cyrillic letters) is a different directory on disk and is not folded.
+
+Consequence: a PR that adds a spec under `docs/specs/` goes to the review lane. A PR that adds only
+new test files stays at regression 0 while the head tree is all ASCII and no new name collides by
+case; otherwise those test files rate 2. To keep new specs in the auto lane, give the
+specs rule `existing_changed = 2` and no `regression` of its own; nothing else changes.
 
 ## When the gate runs
 

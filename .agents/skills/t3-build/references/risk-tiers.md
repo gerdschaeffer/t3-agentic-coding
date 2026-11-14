@@ -40,6 +40,10 @@ Tier step with the new tier.
 
 ## What `tier.py` does not do
 
+- A path the policy rates 2 makes the task T2, so a spec or a runbook (`docs/specs/`, `runbooks/`) is
+  T2. Do not list the run's own spec file when you tier (every run would be T2); list a spec or a
+  runbook only when changing it is the task. A test path stays as before: `tier.py` passes no file
+  status, and the gate rates a changed existing test 2 later, on the finished PR.
 - It ignores size: the policy's size rule (over 200 changed lines) changes the lane only.
 - Every dependency manifest rates 2 in the policy, so a patch or minor upgrade is also T2 (a
   decision, CONCEPT agrees); the gate sends every dependency change to the review lane anyway.

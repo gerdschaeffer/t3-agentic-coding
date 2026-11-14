@@ -39,10 +39,10 @@ FIXTURES = {
         "app/auth/login.py", "src/session.py", "src/crypto/aes.py", "package.json",
         "requirements.txt", "app/migrations/0002.py", "schema.sql", "Dockerfile",
         "deploy/prod.yml", "main.tf", "pytest.ini", "conftest.py",
-        "docs/user/session-timeout.md",
+        "docs/user/session-timeout.md", "docs/specs/x/spec.md", "docs/runbooks/x.md",
     ],
     "T1": [
-        "app/views.py", "README.md", "LICENSE", "docs/specs/x/spec.md", "docs/runbooks/x.md",
+        "app/views.py", "README.md", "LICENSE",
         "tests/test_x.py", "docs/user/sub/x.md", "docs/user/Install.MD",
     ],
     "T0": ["CHANGELOG.md", "docs/user/install.md", "docs/user/a.md"],
@@ -538,6 +538,23 @@ class AC11SkillDocs(Base):
             with self.subTest(ref=name):
                 self.assertIn(f"references/{name}.md", links)
                 self.assertTrue((SKILL / "references" / f"{name}.md").is_file())
+
+
+class FU15SpecsAndRunbooks(Base):
+    """Spec 022 FU15: specs and runbooks are T2 by floor; a test path stays T1."""
+
+    def test_fu15_ac6_specs_and_runbooks_are_t2_by_floor(self):  # spec 022 AC6
+        t = tier_mod()
+        for p in ("docs/specs/x/spec.md", "docs/runbooks/x.md"):
+            with self.subTest(path=p):
+                tier, reasons = t.classify([p], POLICY)
+                self.assertEqual(tier, "T2")
+                self.assertTrue(any(r.startswith(f"floor 2: {p} ") for r in reasons), reasons)
+        self.assertEqual(t.classify(["tests/test_x.py"], POLICY)[0], "T1")
+
+    def test_fu15_ac8_risk_tiers_names_the_own_spec(self):  # spec 022 AC8
+        text = (SKILL / "references" / "risk-tiers.md").read_text()
+        self.assertTrue("own spec" in text, "risk-tiers.md: do not list the run's own spec file")
 
 
 if __name__ == "__main__":

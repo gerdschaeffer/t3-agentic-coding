@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 import tomllib
+import unicodedata
+from collections import Counter
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
@@ -43,10 +45,16 @@ def matches(path, pattern):
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
+def _fold(s):
+    """NFKC then casefold: ſ, ﬁ and fullwidth letters fold like a case-insensitive filesystem."""
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
 def rate_files(files, policy, fold=False):
     """Deterministic floor from changed paths and diff size: (scores, reasons).
 
-    fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
+    fold takes the higher of two keyings, lower() and NFKC-casefold: a case-insensitive checkout
+    treats claude.md as CLAUDE.md.
     """
     return _score(_found(files, policy, fold))
 
@@ -57,7 +65,13 @@ def floor(files, policy):
 
 
 def _found(files, policy, fold):
-    key = str.lower if fold else (lambda s: s)
+    # The folded pass is the higher of two keyings: lower() (a composed or fullwidth character
+    # must not lower a floor) and NFKC-casefold (ſ folds to s).
+    keys = (str.lower, _fold) if fold else (lambda s: s,)
+    return [hit for key in keys for hit in _found_with(files, policy, key)]
+
+
+def _found_with(files, policy, key):
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
         found.append(("regression", 3, f"{len(files)} files: too large to rate, split the PR"))
@@ -85,6 +99,14 @@ def _found(files, policy, fold):
                             "regression",
                             rule["deletions_only"],
                             f"{path} (only removes lines: {why})",
+                        )
+                    )
+                if "existing_changed" in rule and f.get("status") not in (None, "added"):
+                    found.append(
+                        (
+                            "regression",
+                            rule["existing_changed"],
+                            f"{path} (changes an existing file: {why})",
                         )
                     )
     return found
@@ -337,10 +359,11 @@ def main():
             "previous": f["previous_filename"],
             "additions": f["additions"],
             "deletions": f["deletions"],
+            "status": f.get("status") or "unknown",  # fail closed: rated as a changed existing file
         }
         for f in gh_lines(
             f"repos/{repo}/pulls/{pr}/files",
-            ".[] | {filename, previous_filename, additions, deletions}",
+            ".[] | {filename, previous_filename, additions, deletions, status}",
         )
     ]
     # The files API has no file modes: read symlinks (120000) and submodules (160000) from the
@@ -350,7 +373,8 @@ def main():
             "api",
             f"repos/{repo}/git/trees/{sha}?recursive=1",
             "--jq",
-            '{truncated, links: [.tree[] | select(.mode | IN("120000", "160000")) | .path]}',
+            '{truncated, links: [.tree[] | select(.mode | IN("120000", "160000")) | .path],'
+            ' paths: [.tree[].path]}',
         )
     )
     for f in files:
@@ -358,6 +382,19 @@ def main():
             f["link"] = "repo tree too large to check file modes"
         elif f["path"] in tree["links"]:
             f["link"] = "symlink or submodule"
+    # An added file whose folded name matches another tree path replaces it on a case-insensitive
+    # checkout: rate it as a changed existing file.
+    # An added file may replace an existing one on a case-insensitive checkout. Filesystem aliases
+    # (case, Unicode normalisation, ignorable characters) cannot be listed, so: a non-ASCII name,
+    # any non-ASCII path in the tree, or an ASCII case variant counts as a changed file.
+    paths = tree.get("paths", [])
+    lower = Counter(p.lower() for p in paths)
+    unicode_tree = not all(p.isascii() for p in paths)
+    for f in files:
+        if f["status"] == "added" and (
+            unicode_tree or not f["path"].isascii() or lower[f["path"].lower()] > 1
+        ):
+            f["status"] = "case collision"
     # The one login whose ratings count; must match the workflow filter. Default: the owner of a
     # personal repo (an org owner is not a user, so org repos must set `rater`).
     trusted = [policy.get("rater") or repo.split("/")[0]]
