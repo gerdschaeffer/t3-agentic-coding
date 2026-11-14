@@ -811,7 +811,6 @@ The lead posts the reviewer's risk rating under the owner's identity. The gate c
 | No review for clear T1 specs | Fable stays below its weekly cap | A wrong spec is found late, in the code review or by the owner |
 | Later review rounds see changes only | Each round is cheaper than the last | Side effects outside the diff. Covered by tests |
 | Loop budgets | Cost per task has a ceiling | Open points reach the human |
-| Max two workers per subscription at once | Limits last through the day | Less parallel speed |
 | Hard cap on the OpenRouter key | The only real billing limit | Paid work can stop mid-task |
 
 ### Where the best models are used
