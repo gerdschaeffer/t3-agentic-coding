@@ -434,3 +434,11 @@ Six findings, all accepted (a security finding is fixed or escalated, never decl
 | AC26 | **Message size and NUL.** `check_trailers` obtains each commit's message from the raw commit object (`git cat-file commit <sha>`, bounded by `MAX_BYTES`; the message is the part after the first empty line), not from `%B`. A message that contains a NUL byte fails the commit (`message contains NUL`); the 64 KB limit applies to the raw message bytes. `git log` is used only for the list of shas (`--format=%H`). A commit made with `git hash-object --literally` whose message is `Agent: ... \nTier: T2\n\0` followed by 70,000 bytes fails. | tests |
 
 The three scripts keep every earlier AC. Where an existing test pins `%B` or the exact `log` format, the frozen test wins and the implementer reports the conflict instead of changing it.
+
+## 18. Security round 2 (Sol): three low findings, all accepted
+
+| AC | Requirement | Evidence |
+|---|---|---|
+| AC27 | **Parent symlinks of the models file.** When `--models` lies inside `--root`, every path component below `--root` (folders and the file) must not be a symlink; one that is gives exit 2 with empty stdout (as for a symlinked file). A `--models` outside `--root` (the default `<script dir>/../references/models.md`) only has its leaf checked: absolute ancestors such as `/var` or `/tmp` may be symlinks on a runner. Fixture: `root/refs -> elsewhere` with `--models root/refs/models.md` exits 2. | tests |
+| AC28 | **SIGTERM unwinds.** `check_trailers.py` and `diff_guard.py` install a SIGTERM handler (in `main`, not at import) that raises so the `run_git` cleanup runs: after a SIGTERM sent to the script while a stub git and its child sleep, both are dead and the script exits non-zero (143 or 2). SIGKILL of the script cannot be handled and is left to the runner (stated in the docstring). | tests |
+| AC29 | **Kill before reaping.** On timeout, overflow or any exception, `run_git` calls `os.killpg(pgid, SIGKILL)` first (ignoring `ProcessLookupError`) and only then waits for and reaps git; it does not call `poll()` before the kill. Test: with `os.killpg` and `Popen.poll`/`wait` wrapped to record order, the kill comes first in the overflow and timeout cases. | tests |
