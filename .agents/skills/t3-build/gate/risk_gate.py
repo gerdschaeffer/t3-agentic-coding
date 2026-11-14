@@ -249,7 +249,7 @@ def render_card(lane, mode, scores, reasons, blockers, sha, live, hours_ok):
     if reasons:
         lines += ["", "**Why**"] + card_reasons(reasons)
     if blockers:
-        lines += ["", "**Not eligible for auto-merge**"] + [f"- {b}" for b in blockers]
+        lines += ["", "**Not eligible for auto-merge**"] + [show_reason(b) for b in blockers]
     if lane == "auto" and mode == "enforce" and not hours_ok:
         lines += ["", "Outside merge hours: re-run the gate later or merge by hand."]
     return "\n".join(lines)
