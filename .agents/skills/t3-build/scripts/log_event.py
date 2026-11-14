@@ -25,6 +25,7 @@ ENUMS = {
     "verdict": ("APPROVE", "CHANGES", "CLEAN", "FINDINGS", "n/a"),
     "outcome": ("ok", "failed", "blocked", "escalated", "skipped", "disputed"),
     "escalation": ("none", "model-up", "lead", "human"),
+    "lane": ("auto", "review", "block"),
 }
 PATTERNS = {
     "slice": TOKEN,
@@ -49,6 +50,8 @@ def check(key, v):
         return None if isinstance(v, str) and v in ENUMS[key] else f"{key}: must be one of {', '.join(ENUMS[key])}"
     if key in ("attempt", "round"):
         return None if is_int(v, 1) else f"{key}: must be an integer >= 1"
+    if key == "pr":
+        return None if is_int(v, 1) and v <= 10**9 else "pr: must be an integer from 1 to 1000000000"
     if key == "findings":
         ok = isinstance(v, dict) and set(v) == FINDING_KEYS and all(is_int(n, 0) for n in v.values())
         return None if ok else "findings: must have exactly blocker, should, nit, security, each an integer >= 0"

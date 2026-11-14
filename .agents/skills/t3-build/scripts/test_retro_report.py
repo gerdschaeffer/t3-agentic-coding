@@ -35,6 +35,7 @@ H_M2 = ["tier", "slices", "mean rounds", "at budget", "result"]
 H_M3 = ["tier", "reverts"]
 H_M4 = ["week", "hits"]
 H_P = ["signal", "evidence", "proposal"]
+H_M6 = ["lane", "pull requests", "reverts", "revert rate", "result"]
 EMPTY_LOG_LINE = "Events: 0 (malformed skipped: 0). Slices: 0."
 
 
@@ -1136,6 +1137,14 @@ Events: 6 (malformed skipped: 1). Slices: 1.
 ## M5 OpenRouter spend per task
 not recorded in the event log
 
+## M6 lane outcomes
+| lane | pull requests | reverts | revert rate | result |
+|---|---|---|---|---|
+| auto | 0 | 0 | - | keep collecting (n=0) |
+| review | 0 | 0 | - | keep collecting (n=0) |
+| block | 0 | 0 | - | - |
+| unknown | 1 | 0 | 0.00 | - |
+
 ## Proposed changes
 none: keep collecting
 """
@@ -1324,6 +1333,314 @@ class TestFU11SquashCount(Base):
     def test_ac4_since_filters_squash_prs_by_commit_date(self):
         n, _ = self.git_prs(self.squash_repo(), "--since", "2026-01-10")
         self.assertEqual(n, "1")
+
+
+# ---------------------------------------------------------------- FU12 per-lane outcomes (spec 019)
+
+def m6_section(out):
+    lines = out.splitlines()
+    if "## M6 lane outcomes" not in lines:
+        raise AssertionError(f"no M6 section in stdout:\n{out}")
+    i = lines.index("## M6 lane outcomes")
+    j = next((k for k in range(i + 1, len(lines)) if lines[k].startswith("## ")), len(lines))
+    return lines[i + 1:j]
+
+
+def m6row(lane, prs, reverts, rate, result):
+    return [lane, str(prs), str(reverts), rate, result]
+
+
+class TestFU12LaneMetrics(Base):
+    def lane_history(self, plan, name="lanes", date="2026-01-05"):
+        """plan: {lane: (pull requests, reverted among them)}, PR numbers 1.. in plan order. Squash-style
+        commits `Add pN (#N)`; a ship event with pr and lane for every lane except `unknown`; one revert
+        commit per reverted PR, after all PRs."""
+        r = self.new_repo(name)
+        r.commit("Base", date=date)
+        events, reverted, n = [], [], 0
+        for lane, (prs, reverts) in plan.items():
+            for i in range(prs):
+                n += 1
+                sha = r.commit(f"Add p{n} (#{n})", date=date)
+                if lane != "unknown":
+                    events.append(ev(f"s{n}", "ship", ts=T(12), pr=n, lane=lane))
+                if i < reverts:
+                    reverted.append((n, sha))
+        for n, sha in reverted:
+            r.commit(f'Revert "Add p{n} (#{n})"', body=f"This reverts commit {sha}.", date=date)
+        self.write_log(events)
+        return r
+
+    def m6(self, r, *extra):
+        out = self.ok(self.report("--git", str(r.path), *extra))
+        return out, {row[0]: row for row in rows(out, H_M6)}
+
+    # ---- AC2: log lines with pr and lane
+    def test_ac2_pr_and_lane_fields_are_not_malformed(self):
+        self.write_log([ev("s1", "ship", pr=5, lane="auto"), ev("s2", "ship", pr=10**9, lane="block"),
+                        ev("s3", "spec", pr=1), ev("s4", "spec", lane="review")])
+        out = self.ok(self.report())
+        self.assertIn("Events: 4 (malformed skipped: 0). Slices: 4.", out.splitlines())
+
+    def test_ac2_bad_lane_or_pr_is_malformed_as_before(self):
+        bad = [ev("b1", "ship", pr=0), ev("b2", "ship", pr=-1), ev("b3", "ship", pr="7"),
+               ev("b4", "ship", pr=True), ev("b5", "ship", pr=10**9 + 1), ev("b6", "ship", lane="Auto"),
+               ev("b7", "ship", lane=1), ev("b8", "ship", lane="human"), ev("b9", "ship", lane="")]
+        self.write_log([ev("ok", "ship", pr=1, lane="auto")] + bad)
+        out = self.ok(self.report())
+        self.assertIn("Events: 1 (malformed skipped: 9). Slices: 1.", out.splitlines())
+
+    # ---- AC3: PR numbers (observed through the lane rows)
+    def test_ac3_pr_number_from_merge_squash_and_both_forms(self):
+        r = self.new_repo("nums")
+        r.commit("Base", date="2026-01-01")
+        r.commit("Merge pull request #12 from o/x", date="2026-01-05")  # 12
+        r.commit("Add x (#7)", date="2026-01-06")                       # 7
+        r.git("checkout", "-q", "-b", "side")
+        r.commit("Side work", date="2026-01-07")
+        r.git("checkout", "-q", "main")
+        r.commit("Main work", date="2026-01-08")
+        r.git("merge", "--no-ff", "-q", "-m", "Merge pull request #9 from o/y (#7)", "side", date="2026-01-09")  # 9
+        self.write_log([ev("a", "ship", pr=12, lane="auto"), ev("b", "ship", pr=7, lane="review"),
+                        ev("c", "ship", pr=9, lane="block")])
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"][1], "1", out)
+        self.assertEqual(t["review"][1], "1", out)
+        self.assertEqual(t["block"][1], "1", out)
+        self.assertEqual(t["unknown"][1], "0", out)
+
+    def test_ac3_non_pr_commits_have_no_number(self):
+        r = self.new_repo("nonpr")
+        for sub in ("Add x", "Fix (#3) in the middle", "Plain (#4) text", "Hash #5"):
+            r.commit(sub, date="2026-01-05")
+        self.write_log([ev(f"s{n}", "ship", pr=n, lane="auto") for n in (3, 4, 5)])
+        out, t = self.m6(r)
+        self.assertEqual([t[k][1] for k in ("auto", "review", "block", "unknown")], ["0"] * 4, out)
+
+    def test_review_round1_oversized_pr_number_does_not_crash(self):
+        # review round 1 (lead): int() of a 4301-digit subject number raised ValueError
+        r = self.new_repo("bignum")
+        r.commit("Hostile (#" + "9" * 4301 + ")", date="2026-01-05")
+        r.commit("Merge pull request #" + "8" * 4301 + " from o/x", date="2026-01-06")
+        out = self.ok(self.report("--git", str(r.path)))
+        self.assertEqual(find(rows(out, H_X), "pull requests merged")[2], "2", out)
+        t = {row[0]: row for row in rows(out, H_M6)}
+        self.assertEqual(t["unknown"][1], "2", out)
+
+    # ---- AC4: counts per lane
+    def test_ac4_counts_per_lane(self):
+        r = self.lane_history({"auto": (3, 0), "review": (2, 0), "block": (1, 0), "unknown": (1, 0)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 3, 0, "0.00", "keep collecting (n=3)"), out)
+        self.assertEqual(t["review"], m6row("review", 2, 0, "0.00", "keep collecting (n=2)"), out)
+        self.assertEqual(t["block"], m6row("block", 1, 0, "0.00", "-"), out)
+        self.assertEqual(t["unknown"], m6row("unknown", 1, 0, "0.00", "-"), out)
+        self.assertEqual([row[0] for row in rows(out, H_M6)], ["auto", "review", "block", "unknown"])
+
+    def test_ac4_latest_ship_event_of_a_pr_wins(self):
+        r = self.new_repo("twice")
+        r.commit("Add a (#1)", date="2026-01-05")
+        r.commit("Add b (#2)", date="2026-01-05")
+        self.write_log([ev("a1", "ship", pr=1, lane="auto"), ev("a2", "ship", pr=1, lane="review"),
+                        ev("b1", "ship", pr=2, lane="review"), ev("b2", "ship", pr=2, lane="auto")])
+        out, t = self.m6(r)
+        self.assertEqual((t["auto"][1], t["review"][1]), ("1", "1"), out)  # #2 auto, #1 review
+        self.assertEqual((t["block"][1], t["unknown"][1]), ("0", "0"), out)
+
+    def test_ac4_event_without_lane_or_without_commit_adds_nothing(self):
+        r = self.new_repo("nolane")
+        r.commit("Add a (#1)", date="2026-01-05")
+        self.write_log([ev("a", "ship", pr=1), ev("z", "ship", pr=99, lane="auto")])
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 0, 0, "-", "keep collecting (n=0)"), out)
+        self.assertEqual(t["unknown"][1], "1", out)  # PR #1: its event has no lane
+
+    def test_ac4_only_ship_events_give_a_lane(self):
+        # AMBIGUITY: the spec says "latest `ship` event"; a non-ship event with pr and lane is ignored.
+        r = self.new_repo("nonship")
+        r.commit("Add a (#1)", date="2026-01-05")
+        self.write_log([ev("a", "tests", pr=1, lane="auto")])
+        out, t = self.m6(r)
+        self.assertEqual((t["auto"][1], t["unknown"][1]), ("0", "1"), out)
+
+    def test_ac4_since_limits_pull_requests_and_reverts(self):
+        r = self.new_repo("since")
+        r.commit("Base", date="2026-01-01")
+        a = r.commit("Add a (#1)", date="2026-01-05")
+        b = r.commit("Add b (#2)", date="2026-01-12")
+        r.commit('Revert "Add a (#1)"', body=f"This reverts commit {a}.", date="2026-01-06")
+        r.commit('Revert "Add b (#2)"', body=f"This reverts commit {b}.", date="2026-01-14")
+        self.write_log([ev("a", "ship", pr=1, lane="auto", ts="2026-01-20T10:00:00Z"),
+                        ev("b", "ship", pr=2, lane="review", ts="2026-01-20T10:00:00Z")])
+        _, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 1, 1, "1.00", "keep collecting (n=1)"))
+        self.assertEqual(t["review"], m6row("review", 1, 1, "1.00", "keep collecting (n=1)"))
+        out, t = self.m6(r, "--since", "2026-01-10")
+        self.assertEqual(t["auto"], m6row("auto", 0, 0, "-", "keep collecting (n=0)"), out)
+        self.assertEqual(t["review"], m6row("review", 1, 1, "1.00", "keep collecting (n=1)"), out)
+
+    def test_m6_follows_m5_and_has_the_exact_no_data_text(self):
+        r = self.new_repo("nodata")
+        r.commit("Base", date="2026-01-01")
+        out = self.ok(self.report("--git", str(r.path)))
+        lines = out.splitlines()
+        i = lines.index("## M5 OpenRouter spend per task")
+        self.assertEqual(lines[i + 1:i + 3], ["not recorded in the event log", ""], out)
+        self.assertEqual(lines[i + 3:i + 12], [
+            "## M6 lane outcomes",
+            "| lane | pull requests | reverts | revert rate | result |",
+            "|---|---|---|---|---|",
+            "| auto | 0 | 0 | - | keep collecting (n=0) |",
+            "| review | 0 | 0 | - | keep collecting (n=0) |",
+            "| block | 0 | 0 | - | - |",
+            "| unknown | 0 | 0 | - | - |",
+            "",
+            "## Proposed changes"], out)
+
+    # ---- AC5: reverts by lane
+    def revert_of(self, r, sha, subject, date="2026-01-10"):
+        return r.commit(f'Revert "{subject}"', body=f"This reverts commit {sha}.", date=date)
+
+    def test_ac5_revert_of_a_squash_commit_counts_under_its_lane(self):
+        r = self.new_repo("sq")
+        x = r.commit("X (#5)", date="2026-01-05")
+        self.revert_of(r, x, "X (#5)")
+        self.write_log([ev("x", "ship", pr=5, lane="auto")])
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 1, 1, "1.00", "keep collecting (n=1)"), out)
+        self.assertEqual((t["review"][2], t["block"][2], t["unknown"][2]), ("0", "0", "0"), out)
+
+    def test_ac5_revert_of_a_merge_commit_pr_counts_under_its_lane(self):
+        r = self.new_repo("mc")
+        m = r.commit("Merge pull request #6 from o/x", date="2026-01-05")
+        self.revert_of(r, m, "Merge pull request #6 from o/x")
+        self.write_log([ev("x", "ship", pr=6, lane="review")])
+        out, t = self.m6(r)
+        self.assertEqual(t["review"][1:4], ["1", "1", "1.00"], out)
+        self.assertEqual(t["unknown"][2], "0", out)
+
+    def test_ac5_revert_of_a_commit_without_pr_number_is_unknown(self):
+        r = self.new_repo("nopr")
+        h = r.commit("Plain change", date="2026-01-05")
+        self.revert_of(r, h, "Plain change")
+        out, t = self.m6(r)
+        self.assertEqual(t["unknown"], m6row("unknown", 0, 1, "-", "-"), out)  # reverts, no PRs: rate "-"
+
+    def test_ac5_revert_of_a_commit_not_in_the_history_is_unknown(self):
+        r = self.new_repo("gone")
+        r.commit("Base", date="2026-01-05")
+        r.commit("Revert something", body="This reverts commit " + "a" * 40 + ".", date="2026-01-10")
+        out, t = self.m6(r)
+        self.assertEqual(t["unknown"], m6row("unknown", 0, 1, "-", "-"), out)
+
+    def test_ac5_revert_of_a_pr_commit_with_no_event_is_unknown(self):
+        r = self.new_repo("noevent")
+        x = r.commit("X (#8)", date="2026-01-05")
+        self.revert_of(r, x, "X (#8)")
+        self.write_log([ev("y", "ship", pr=1, lane="auto")])
+        out, t = self.m6(r)
+        self.assertEqual(t["unknown"], m6row("unknown", 1, 1, "1.00", "-"), out)
+        self.assertEqual(t["auto"][2], "0", out)
+
+    def test_ac5_rate_has_two_decimals_and_dash_for_a_lane_without_prs(self):
+        r = self.lane_history({"auto": (3, 1)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 3, 1, "0.33", "keep collecting (n=3)"), out)
+        self.assertEqual(t["review"], m6row("review", 0, 0, "-", "keep collecting (n=0)"), out)
+        self.assertEqual(t["block"], m6row("block", 0, 0, "-", "-"), out)
+
+    # ---- AC6: results and rule 8
+    def assert_rule8(self, out, evidence=None):
+        hit = fired(out, "tighten the auto lane")
+        if evidence is None:
+            self.assertEqual(hit, [], out)
+        else:
+            self.assertEqual(len(hit), 1, out)
+            self.assertEqual(hit[0][1], evidence)
+
+    def test_ac6_auto_19_prs_keeps_collecting_and_never_fires_rule8(self):
+        r = self.lane_history({"auto": (19, 3), "review": (20, 0)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 19, 3, "0.16", "keep collecting (n=19)"), out)
+        self.assertEqual(t["review"], m6row("review", 20, 0, "0.00", "keep"), out)
+        self.assert_rule8(out)
+
+    def test_ac6_auto_19_prs_against_empty_review_does_not_fire(self):
+        r = self.lane_history({"auto": (19, 1)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"][4], "keep collecting (n=19)", out)
+        self.assert_rule8(out)
+
+    def test_ac6_auto_20_prs_without_reverts_is_keep(self):
+        r = self.lane_history({"auto": (20, 0)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 20, 0, "0.00", "keep"), out)
+        self.assertEqual(t["review"], m6row("review", 0, 0, "-", "keep collecting (n=0)"), out)
+        self.assert_rule8(out)
+
+    def test_ac6_auto_20_prs_above_review_rate_escapes_and_fires_rule8(self):
+        r = self.lane_history({"auto": (20, 1), "review": (20, 0)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"], m6row("auto", 20, 1, "0.05", "auto lane escapes more than review"), out)
+        self.assertEqual(t["review"], m6row("review", 20, 0, "0.00", "keep"), out)
+        self.assert_rule8(out, "auto: 1/20, review: 0/20")
+
+    def test_ac6_review_without_prs_and_one_auto_revert_fires_rule8(self):
+        r = self.lane_history({"auto": (20, 1)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"][4], "auto lane escapes more than review", out)
+        self.assertEqual(t["review"], m6row("review", 0, 0, "-", "keep collecting (n=0)"), out)
+        self.assert_rule8(out, "auto: 1/20, review: 0/0")
+
+    def test_ac6_equal_rates_is_keep_and_no_rule8(self):
+        r = self.lane_history({"auto": (20, 1), "review": (20, 1)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"][4], "keep", out)
+        self.assertEqual(t["review"][4], "keep", out)
+        self.assert_rule8(out)
+
+    def test_ac6_auto_below_review_rate_is_keep(self):
+        r = self.lane_history({"auto": (20, 0), "review": (20, 2)})
+        out, t = self.m6(r)
+        self.assertEqual(t["auto"][4], "keep", out)
+        self.assertEqual(t["review"][4], "keep", out)
+        self.assert_rule8(out)
+
+    def test_ac6_review_19_prs_keeps_collecting(self):
+        r = self.lane_history({"auto": (20, 0), "review": (19, 0)})
+        out, t = self.m6(r)
+        self.assertEqual(t["review"][4], "keep collecting (n=19)", out)
+        self.assertEqual(t["auto"][4], "keep", out)
+
+    def test_ac6_block_and_unknown_always_show_a_dash(self):
+        r = self.lane_history({"block": (2, 1), "unknown": (2, 1)})
+        out, t = self.m6(r)
+        self.assertEqual(t["block"], m6row("block", 2, 1, "0.50", "-"), out)
+        self.assertEqual(t["unknown"], m6row("unknown", 2, 1, "0.50", "-"), out)
+        self.assert_rule8(out)
+
+    # ---- AC7: no git, no commit text, deterministic
+    def test_ac7_git_not_available(self):
+        self.write_log([ev("a", "ship", pr=1, lane="auto")])
+        out = self.ok(self.report())  # cwd is not a work tree
+        self.assertIn("git: not available", m6_section(out))
+        self.assert_rule8(out)
+
+    def test_ac7_no_commit_message_text_is_printed(self):
+        r = self.new_repo("canary")
+        x = r.commit("Add CANARY-77 (#1)", body="CANARY-88 details", date="2026-01-05")
+        r.commit('Revert "Add CANARY-77 (#1)"', body=f"CANARY-99 note\n\nThis reverts commit {x}.", date="2026-01-06")
+        self.write_log([ev("x", "ship", pr=1, lane="auto")])
+        cp = self.report("--git", str(r.path))
+        out = self.ok(cp)
+        self.assertEqual(rows(out, H_M6)[0], m6row("auto", 1, 1, "1.00", "keep collecting (n=1)"), out)
+        for text in ("CANARY", "Add CANARY", "Revert"):
+            self.assertNotIn(text, cp.stdout + cp.stderr)
+
+    def test_ac7_output_is_deterministic(self):
+        r = self.lane_history({"auto": (3, 1), "review": (2, 1), "block": (1, 0), "unknown": (1, 1)})
+        a = self.ok(self.report("--git", str(r.path)))
+        self.assertEqual(a, self.ok(self.report("--git", str(r.path))))
 
 
 if __name__ == "__main__":
