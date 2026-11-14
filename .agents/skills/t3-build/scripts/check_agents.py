@@ -7,12 +7,16 @@ Folders: for each of claude, codex, opencode, <root>/.<p>/agents or else <root>/
 Exit 0: every agent file matches its row. Exit 1: drift, or input over a bound. Exit 2: bad
 arguments, an unreadable or malformed models.md, an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
-Reads files only. Symlinks are problems, never followed, --root included; a --models inside --root has no
-symlink below --root, one outside has only its leaf checked. File contents are never printed; every
-printed value goes through plain().
+Reads files only. Symlinks are problems, never followed, --root included. Each agents folder is opened
+once (walked from --root, O_NOFOLLOW) and listed and read only through that descriptor.
+--models: empty, a `..` component or an empty component (`//`, a trailing /) is exit 2; `.` components
+are dropped. It is inside --root when a lexical ancestor is the same folder as --root (os.path.samefile,
+the shallowest one counts); then no component below that ancestor may be a symlink. One outside has only
+its leaf checked. File contents are never printed; every printed value goes through plain().
 """
 
 import argparse
+import errno
 import os
 import re
 import stat
@@ -32,6 +36,7 @@ SEPARATOR = re.compile(r":?-+:?")
 PROVIDERS = {"Claude": "claude", "Codex": "codex", "OpenRouter": "opencode"}
 EXT = {"claude": ".md", "codex": ".toml", "opencode": ".md"}
 EFFORT_KEY = {"claude": "effort", "codex": "model_reasoning_effort", "opencode": "reasoningEffort"}
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 class Usage(Exception):
@@ -48,14 +53,30 @@ def open_models(path, root):
     """fd of the models file. Inside root, no component below root may be a symlink: each one is opened
     O_NOFOLLOW from its parent's fd. Outside root only the leaf is checked (runner ancestors may be links)."""
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-    absolute, root = Path(os.path.abspath(path)), os.path.abspath(root)
-    if not absolute.is_relative_to(root):
-        return os.open(path, flags)
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parts = path.split("/")
+    absolute = path.startswith("/")
+    if absolute:
+        parts = parts[1:]
+    if not path or "" in parts or ".." in parts:
+        raise Usage("--models: empty, `..` or empty path component")
+    parts = [p for p in parts if p != "."]
+    if not absolute:
+        parts = [p for p in os.getcwd().split("/") if p] + parts
+    inside = None
+    for i in range(len(parts)):  # the shallowest lexical ancestor that is the root folder
+        try:
+            if os.path.samefile("/" + "/".join(parts[:i]), root):
+                inside = i
+                break
+        except OSError:
+            pass
+    if inside is None:
+        return os.open("/" + "/".join(parts), flags)
+    fd = os.open(root, DIR_FLAGS)
     try:
-        *folders, leaf = absolute.relative_to(root).parts or (".",)
+        *folders, leaf = parts[inside:]
         for part in folders:
-            below = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            below = os.open(part, DIR_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = below
         return os.open(leaf, flags, dir_fd=fd)
@@ -144,24 +165,23 @@ def parse(folder, data):
 
 
 def find_folders(root):
-    """{folder: (path, rel)}; Usage when both forms exist or none at all."""
+    """{folder: name of the folder below root that holds agents/}; Usage when both forms exist or none at all."""
     found = {}
     for p in EXT:
-        present = [(d, root / d / "agents") for d in ("." + p, p) if os.path.lexists(root / d / "agents")]
+        present = [d for d in ("." + p, p) if os.path.lexists(root / d / "agents")]
         if len(present) > 1:
             raise Usage(f"both .{p}/agents and {p}/agents exist")
         if present:
-            d, path = present[0]
-            found[p] = (path, f"{d}/agents")
+            found[p] = present[0]
     if not found:
         raise Usage("no agent folder under root")
     return found
 
 
-def check_file(folder, path, rel, stem, rows, problems):
-    """Checks one regular agent file; True when it was read and checked."""
+def check_file(folder, dir_fd, name, rel, stem, rows, problems):
+    """Checks one regular agent file, opened through its folder's fd; True when it was read and checked."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
         with os.fdopen(fd, "rb") as f:
             data = f.read(MAX_AGENT_BYTES + 1)
     except OSError:
@@ -197,38 +217,68 @@ def check_file(folder, path, rel, stem, rows, problems):
     return True
 
 
+def open_folder(root_fd, d):
+    """fd of <root>/<d>/agents, each component opened O_NOFOLLOW from its parent's fd (the folder is pinned)."""
+    fd = os.open(d, DIR_FLAGS, dir_fd=root_fd)
+    try:
+        return os.open("agents", DIR_FLAGS, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
 def check(root, rows):
     problems, checked = [], 0
-    for folder, (path, rel_folder) in find_folders(root).items():
-        if os.path.islink(path.parent) or os.path.islink(path) or not os.path.isdir(path):
-            problems.append(f"{plain(rel_folder)}: not a regular folder")
-            continue
-        ext = EXT[folder]
-        entries = []
-        try:
-            with os.scandir(path) as it:
-                for e in it:
-                    if e.name.endswith(ext) and not e.is_dir(follow_symlinks=False):
-                        entries.append(e)
-                        if len(entries) > MAX_AGENT_FILES:
-                            break
-        except OSError:
-            raise Usage(f"cannot read {plain(rel_folder)}")
-        if len(entries) > MAX_AGENT_FILES:
-            problems.append(f"too large: {plain(rel_folder)} over {MAX_AGENT_FILES} files")
-            continue
-        present = set()
-        for e in sorted(entries, key=lambda e: e.name):
-            rel, stem = f"{rel_folder}/{e.name}", e.name[:-len(ext)]
-            if not e.is_file(follow_symlinks=False):
-                problems.append(f"{plain(rel)}: not a regular file")
+    found = find_folders(root)
+    try:
+        root_fd = os.open(root, DIR_FLAGS)
+    except OSError:
+        raise Usage("cannot read --root")
+    try:
+        for folder, d in found.items():
+            rel_folder = f"{d}/agents"
+            try:
+                fd = open_folder(root_fd, d)
+            except OSError as e:
+                if e.errno not in (errno.ELOOP, errno.ENOTDIR):
+                    raise Usage(f"cannot read {plain(rel_folder)}")
+                problems.append(f"{plain(rel_folder)}: not a regular folder")
                 continue
-            present.add(stem)
-            checked += check_file(folder, e.path, rel, stem, rows, problems)
-        for (f, name), (provider, _, _) in rows.items():
-            if f == folder and name not in present:
-                problems.append(f"{name}: row in models.md ({provider}) has no file in {plain(rel_folder)}")
+            try:
+                checked += check_folder(folder, fd, rel_folder, rows, problems)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(root_fd)
     return problems, checked
+
+
+def check_folder(folder, fd, rel_folder, rows, problems):
+    """Lists and reads the agents folder only through fd; returns the number of files checked."""
+    ext, entries, checked = EXT[folder], [], 0
+    try:
+        with os.scandir(fd) as it:
+            for e in it:
+                if e.name.endswith(ext) and not e.is_dir(follow_symlinks=False):
+                    entries.append(e)
+                    if len(entries) > MAX_AGENT_FILES:
+                        break
+    except OSError:
+        raise Usage(f"cannot read {plain(rel_folder)}")
+    if len(entries) > MAX_AGENT_FILES:
+        problems.append(f"too large: {plain(rel_folder)} over {MAX_AGENT_FILES} files")
+        return 0
+    present = set()
+    for e in sorted(entries, key=lambda e: e.name):
+        rel, stem = f"{rel_folder}/{e.name}", e.name[:-len(ext)]
+        if not e.is_file(follow_symlinks=False):
+            problems.append(f"{plain(rel)}: not a regular file")
+            continue
+        present.add(stem)
+        checked += check_file(folder, fd, e.name, rel, stem, rows, problems)
+    for (f, name), (provider, _, _) in rows.items():
+        if f == folder and name not in present:
+            problems.append(f"{name}: row in models.md ({provider}) has no file in {plain(rel_folder)}")
+    return checked
 
 
 def main(argv=None):

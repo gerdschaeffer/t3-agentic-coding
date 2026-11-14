@@ -437,7 +437,8 @@ class TestAC4Real(Base):
                    for p, g in (("claude", "*.md"), ("codex", "*.toml"), ("opencode", "*.md")))
 
     def test_real_staging_matches(self):
-        cp = self.run_ca("--root", "../../../../staging", "--models", "../references/models.md", cwd=SCRIPTS)
+        # lead, spec 015 AC31: a `..` component in --models is rejected, so the real models.md is given absolute
+        cp = self.run_ca("--root", "../../../../staging", "--models", str(REAL_MODELS), cwd=SCRIPTS)
         self.clean(cp, n=self.real_count(REAL_STAGING))
 
     def test_default_models_path_is_next_to_the_script(self):

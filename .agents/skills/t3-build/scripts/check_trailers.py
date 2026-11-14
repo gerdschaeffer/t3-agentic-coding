@@ -14,8 +14,10 @@ Limits: the lines are self-declared and any matching line counts, including one 
 fenced example in the body; this is a consistency check, not authentication. Merge commits are
 skipped, so changes made in a merge resolution carry no trailer requirement.
 
-SIGTERM unwinds through run_git's cleanup, which kills git's process group; SIGKILL of the script
-cannot be handled, so git's group is then left to the runner.
+SIGTERM is deferred: the handler only sets a flag, run_git sees it within 0.1 s, kills git's process
+group, reaps git (at most 5 s) and the script exits 143. A group kill that fails, or a reap that
+does not finish, is exit 2 (`could not terminate git`). SIGKILL of the script cannot be handled, so
+git's group is then left to the runner.
 """
 
 import argparse
@@ -33,6 +35,8 @@ MAX_BYTES = 5_000_000  # git output per call
 MAX_LINE = 4096
 MAX_MESSAGE = 64 * 1024
 GIT_TIMEOUT = 60  # seconds per git call
+STEP = 0.1  # longest wait between two looks at the SIGTERM flag
+stopped = False  # set by the SIGTERM handler
 GIT_FLAGS = ["-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.pager=cat", "--no-pager"]
 REV = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -71,11 +75,11 @@ def run_git(args, repo):
     deadline, out, code = time.monotonic() + GIT_TIMEOUT, bytearray(), None
     try:
         fd = p.stdout.fileno()
-        while True:
+        while not stopped:
             left = deadline - time.monotonic()
             if left <= 0:
                 die("git timed out")
-            if not select.select([fd], [], [], left)[0]:
+            if not select.select([fd], [], [], min(left, STEP))[0]:
                 continue
             chunk = os.read(fd, 65536)
             if not chunk:
@@ -83,18 +87,33 @@ def run_git(args, repo):
             out += chunk
             if len(out) > MAX_BYTES:
                 too_large("git output", f"{MAX_BYTES} bytes")
-        try:
-            code = p.wait(timeout=max(deadline - time.monotonic(), 0.01))
-        except subprocess.TimeoutExpired:
-            die("git timed out")
+        while not stopped and code is None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                die("git timed out")
+            try:
+                code = p.wait(timeout=min(left, STEP))
+            except subprocess.TimeoutExpired:
+                pass
     finally:
-        if code is None:  # timeout, overflow or exception: kill the group before reaping, so its pgid stays git's
+        # The handler raises nothing, so this cleanup always runs to the end.
+        failed = False
+        if code is None:  # timeout, overflow, SIGTERM or exception: kill the group before reaping (pgid stays git's)
             try:
                 os.killpg(p.pid, signal.SIGKILL)
-            except OSError:  # ProcessLookupError, or EPERM for a group of zombies on macOS
+            except ProcessLookupError:
                 pass
-            p.wait()
+            except OSError:  # fail closed, also for macOS EPERM on a group of zombies
+                failed = True
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                failed = True
         p.stdout.close()
+        if failed:
+            die("could not terminate git")
+        if stopped:
+            sys.exit(143)
     if code:
         die(f"git {args[0]} failed (exit {code}): not a repository or unknown revision")
     return bytes(out)
@@ -115,13 +134,17 @@ def missing(message):
 
 
 def on_sigterm(signum, frame):
-    raise SystemExit(143)
+    global stopped
+    stopped = True
 
 
 def main(argv=None):
+    global stopped
+    stopped = False
     previous = signal.signal(signal.SIGTERM, on_sigterm)
     try:
-        return run(argv)
+        code = run(argv)
+        return 143 if stopped else code  # a SIGTERM that came after the last git call
     finally:
         signal.signal(signal.SIGTERM, previous)
 
