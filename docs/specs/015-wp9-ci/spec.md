@@ -504,3 +504,27 @@ the test conventions the patterns do not cover (`__tests__/`, `spec/`, `*_spec.*
 - Accepted by the spec, still true: branch name spoofing, self-declared trailers, equal-count
   assertion rewrites, `models.md` and an agent file changed together, the `actions/checkout@v4` tag
   until the human pins it.
+
+## 22. Second security pass, round 2 (security-engineer): nine items
+
+Round 1's nine fixes hold. New: N1 (medium), N2 (medium, design), N3 to N5 (low), N6 to N9 (nits).
+N2 is escalated; the rest are fixed.
+
+| AC | Item | Requirement | Evidence |
+|---|---|---|---|
+| AC45 | N1 | `ci.yml` also triggers on `pull_request` with `types: [opened, synchronize, reopened, edited]` (exactly those four), like the guards, so a base retarget re-runs `ci`. | tests (static, mutation) |
+| AC46 | N3 | The three guard templates get `BASE_REF: ${{ github.base_ref }}` in the guard step's `env:` and, after deriving `BASE_SHA`, run `git merge-base --is-ancestor "$BASE_SHA" "refs/remotes/origin/$BASE_REF"`; a non-zero result fails the step with `the merge base is not on the target branch` (bash `if`, no `\|\| true`). `BASE_REF` is only an argument of that command (quoted). Executable test: a merge commit of an unrelated old branch and the head fails; the normal merge fixture passes; a missing `origin/$BASE_REF` fails. | tests |
+| AC47 | N4 | The gate policy rule "repo root: tool config and modules that shadow imports" also lists `*/Makefile*`, `*/GNUmakefile*` and `*/makefile*` (a Makefile in any folder, and `Makefile.inc`); `sub/Makefile`, `tools/GNUmakefile`, `Makefile.inc` rate regression 2. The README says the trust root is the Makefile and everything it calls (a script it runs is rated by the ordinary rules, so read those too). | gate test, README test |
+| AC48 | N5 | In `check_agents.py` a symlink inside an agents folder is reported whatever its name or target (`<rel>: not a regular file`, exit 1); a symlinked folder named `sub` is no exception. | tests |
+| AC49 | N6, N7 | A Codex TOML file that makes the parser raise `ValueError` (for example an integer of 5,000 digits) or `RecursionError` is `unparsable (invalid TOML)`, exit 1, no traceback. The control-character set of AC42 also includes U+0080 to U+009F, U+2028 and U+2029. | tests |
+| AC50 | N8 | The guard step fails when `git rev-parse --verify -q HEAD^3` succeeds (an octopus merge): `checkout is not the merge of the pull request head`. | tests (static, executable) |
+| AC51 | N9 | An agent file whose extension is `.md` or `.toml` in any letter case (`EVIL.MD`) is checked like the lowercase one. | tests |
+
+**Escalated (N2, design):** two PRs on the same head SHA (one against a soft base branch that
+predates the guards, one against `main`) share check runs, and the newest check run on the SHA
+counts. A person who can push a base branch can leave green runs on the SHA. Partial: add
+`branches: [main]` to the four templates so fork authors cannot do it; full: the gate, before
+merging, checks that each required check run belongs to this PR number, or a repository ruleset with
+required workflows pinned to a ref. Noted in `ci/README.md`. The earlier statement "the gate already
+blocks `.github/` changes" does not cover this case, since no `.github/` diff is involved.
+Also escalated, unchanged: F4, F5, `pull_request_target` (F10), Sol's SIGINT and `setsid` residuals.
