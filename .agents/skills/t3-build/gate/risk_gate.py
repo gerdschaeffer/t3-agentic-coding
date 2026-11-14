@@ -87,6 +87,14 @@ def _found(files, policy, fold):
                             f"{path} (only removes lines: {why})",
                         )
                     )
+                if "existing_changed" in rule and f.get("status") not in (None, "added"):
+                    found.append(
+                        (
+                            "regression",
+                            rule["existing_changed"],
+                            f"{path} (changes an existing file: {why})",
+                        )
+                    )
     return found
 
 
@@ -337,10 +345,11 @@ def main():
             "previous": f["previous_filename"],
             "additions": f["additions"],
             "deletions": f["deletions"],
+            "status": f.get("status") or "unknown",  # fail closed: rated as a changed existing file
         }
         for f in gh_lines(
             f"repos/{repo}/pulls/{pr}/files",
-            ".[] | {filename, previous_filename, additions, deletions}",
+            ".[] | {filename, previous_filename, additions, deletions, status}",
         )
     ]
     # The files API has no file modes: read symlinks (120000) and submodules (160000) from the

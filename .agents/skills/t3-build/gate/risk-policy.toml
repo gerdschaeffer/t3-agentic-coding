@@ -6,6 +6,7 @@
 # stays within one directory. A file gets the highest level of every rule it matches;
 # a file no rule matches gets [default]. Overly broad patterns only make the gate
 # stricter. A symlink or submodule in the PR is always rated at least 2.
+# existing_changed = N: a file the PR changes, removes or renames (any status but "added") rates N.
 
 mode = "shadow"   # "shadow": rate and comment only. "enforce": also auto-merge the auto lane.
 live = false      # true once production CD exists: user impact then counts.
@@ -42,6 +43,12 @@ reason = "tests"
 paths = ["*/tests/*", "*/test/*", "*/test_*", "*_test.*", "*.test.*", "*.spec.*"]
 regression = 0
 deletions_only = 2             # a test file that only loses lines
+existing_changed = 2           # a changed existing test can weaken a check; a new test cannot
+
+[[rule]]
+reason = "specs and runbooks"
+paths = ["*/docs/specs/*", "*/docs/*/spec.md", "*/docs/*.spec.md", "*/runbooks/*", "*/runbook*.md"]
+regression = 2
 
 [[rule]]
 reason = "dependency change"
