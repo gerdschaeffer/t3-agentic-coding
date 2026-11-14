@@ -384,13 +384,15 @@ def main():
             f["link"] = "symlink or submodule"
     # An added file whose folded name matches another tree path replaces it on a case-insensitive
     # checkout: rate it as a changed existing file.
-    # Two keyings (lower() and NFKC-casefold) and any non-ASCII name: no key lists every alias a
-    # filesystem applies.
-    keys = (str.lower, _fold)
-    seen = [Counter(k(p) for p in tree.get("paths", [])) for k in keys]
+    # An added file may replace an existing one on a case-insensitive checkout. Filesystem aliases
+    # (case, Unicode normalisation, ignorable characters) cannot be listed, so: a non-ASCII name,
+    # any non-ASCII path in the tree, or an ASCII case variant counts as a changed file.
+    paths = tree.get("paths", [])
+    lower = Counter(p.lower() for p in paths)
+    unicode_tree = not all(p.isascii() for p in paths)
     for f in files:
         if f["status"] == "added" and (
-            not f["path"].isascii() or any(c[k(f["path"])] > 1 for c, k in zip(seen, keys))
+            unicode_tree or not f["path"].isascii() or lower[f["path"].lower()] > 1
         ):
             f["status"] = "case collision"
     # The one login whose ratings count; must match the workflow filter. Default: the owner of a

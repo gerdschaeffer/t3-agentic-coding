@@ -148,12 +148,15 @@ Two fold rules keep the floor from being dodged by a name (Sol security pass, sp
 case-folded pass is the higher of two keyings, `lower()` and NFKC plus `casefold()` (NFKC alone can
 lower a floor: it composes `N` and U+0303 into `Ñ`), so `docs/ſpecs/x.md`
 (U+017F) is the spec directory on a case-folding checkout and rates like `docs/specs/x.md`; the
-exact pass is unchanged. And `main` lists the head tree: an `added` file with a non-ASCII name, or
-whose name equals another path of the tree under either keying (`lower()` or NFKC plus
-`casefold()`; a `tests/test_login.py` next to `tests/test_Login.py` replaces it on a case-insensitive
-checkout) gets the status `case collision`, which `existing_changed` rates as a
-changed file. A lookalike that no fold maps (Cyrillic letters) is a different directory on disk and is
-not folded.
+exact pass is unchanged. And `main` lists the head tree and marks an `added` file `case collision`,
+which `existing_changed` rates as a changed file, when its name is non-ASCII, when the tree holds
+any non-ASCII path, or when another tree path has the same `lower()` name (a `tests/test_login.py`
+next to `tests/test_Login.py` replaces it on a case-insensitive checkout). The aliases a filesystem
+applies (Unicode normalisation, ignorable characters such as U+200C on HFS+, upcase tables) cannot
+be listed, so the rule is conservative: in a repository with any non-ASCII file name, a new test file
+goes to the review lane. Not detected: ASCII aliases other than case (Windows trailing dots and
+spaces, 8.3 names; git's `core.protectNTFS` refuses most of them at checkout). A lookalike that no
+fold maps (Cyrillic letters) is a different directory on disk and is not folded.
 
 Consequence: a PR that adds a spec under `docs/specs/` goes to the review lane. A PR that adds only
 new test files stays at regression 0. To keep new specs in the auto lane, give the
