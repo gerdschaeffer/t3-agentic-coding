@@ -21,7 +21,7 @@ FIELDS = {
     "security_pass": re.compile(r"^security_pass: (clean|n/a)$", re.M),
 }
 VERDICT = re.compile(r"VERDICT: (APPROVE|CHANGES)")
-RISK = re.compile(r"RISK regression=([0-3]) security=([0-3]) user=([0-3])")
+RISK = re.compile(r"RISK regression=([0-3]) security=([0-3]) user=([0-3])(?: reasons:(?: .*)?)?")  # the brief asks for reasons
 SECURITY = re.compile(r"(?:SECURITY|VERDICT): (CLEAN|FINDINGS)")
 RATINGS = ("regression", "security", "user")
 
