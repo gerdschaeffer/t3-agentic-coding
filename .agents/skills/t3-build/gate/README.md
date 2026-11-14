@@ -154,12 +154,14 @@ any non-ASCII path, or when another tree path has the same `lower()` name (a `te
 next to `tests/test_Login.py` replaces it on a case-insensitive checkout). The aliases a filesystem
 applies (Unicode normalisation, ignorable characters such as U+200C on HFS+, upcase tables) cannot
 be listed, so the rule is conservative: in a repository with any non-ASCII file name, a new test file
-goes to the review lane. Not detected: ASCII aliases other than case (Windows trailing dots and
-spaces, 8.3 names; git's `core.protectNTFS` refuses most of them at checkout). A lookalike that no
+goes to the review lane. Not detected: ASCII aliases other than case (Windows 8.3 short names;
+git's `core.protectNTFS` rejects trailing dots and spaces, but its short-name checks cover only Git
+metadata names, so an arbitrary 8.3 alias is not refused). A lookalike that no
 fold maps (Cyrillic letters) is a different directory on disk and is not folded.
 
 Consequence: a PR that adds a spec under `docs/specs/` goes to the review lane. A PR that adds only
-new test files stays at regression 0. To keep new specs in the auto lane, give the
+new test files stays at regression 0 while the head tree is all ASCII and no new name collides by
+case; otherwise those test files rate 2. To keep new specs in the auto lane, give the
 specs rule `existing_changed = 2` and no `regression` of its own; nothing else changes.
 
 ## When the gate runs

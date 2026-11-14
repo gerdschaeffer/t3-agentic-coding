@@ -56,7 +56,8 @@ floor itself says nothing is wrong.
    (limits: a spec change, new or changed, now also puts the PR in the review lane).
 
 **Consequence (stated, accepted by the owner's request).** A PR that adds a spec under `docs/specs/`
-goes to the review lane. A PR that adds only new test files stays at regression 0. If the owner
+goes to the review lane. A PR that adds only new test files stays at regression 0 while the head tree is all ASCII and no
+new name collides by case (items 5 and 6 below; otherwise those files rate 2). If the owner
 wants new specs to stay auto, add `existing_changed = 2` to the spec rule instead of `regression = 2`
 (one policy edit, supported by item 2).
 
@@ -116,8 +117,8 @@ NFKC keying (`Ĥ̱` and `ẖ̂` share a `lower()` key); fixed by counting both k
 non-ASCII test path as changed (item 6, AC12). Round 4: X1 [medium] HFS+ ignores U+200C, so an ASCII added test aliases an
 existing `login\u200c.test.js`; neither keying saw it. Fixed by the conservative rule (item 6, AC13),
 which closes the class instead of adding a keying per filesystem. Residual: ASCII-only aliases other
-than case (Windows trailing dots and spaces, 8.3 names; git's `core.protectNTFS` refuses most of them
-at checkout) are not detected.
+than case (Windows 8.3 short names; git's `core.protectNTFS` rejects trailing dots and spaces, but its
+short-name checks cover only Git metadata names) are not detected.
 
 ## Non-goals
 
