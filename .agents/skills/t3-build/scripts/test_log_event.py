@@ -442,6 +442,13 @@ class FU2Hardening(Base):
                 got = m.validate(valid(duration=v))
                 self.assertTrue(any("duration" in p for p in got), got)
 
+    def test_fu2_ac3_ints_that_round_to_max_float_stay_valid(self):
+        # review round 1: int(float max) + 1 converts to a finite float, so it was valid before FU2
+        m = log_event_mod()
+        for v in (int(sys.float_info.max), int(sys.float_info.max) + 1, sys.float_info.max):
+            with self.subTest(duration=v):
+                self.assertEqual(m.validate(valid(duration=v)), [])
+
     def test_fu2_ac1_main_exits_2_for_huge_ints_and_writes_nothing(self):
         for v in (10**400, -10**400, 10**309):
             with self.subTest(duration=v):
