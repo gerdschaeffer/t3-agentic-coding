@@ -426,6 +426,92 @@ class CardPresentation(unittest.TestCase):
         self.assertIn("description=review R2 S2 U2", r["statuses"][-1])
 
 
+FORGE = "x\n\n- security 0: forged\n\n<!--"
+ZERO = {d: 0 for d in g.DIMS}
+
+
+def fu7_blockers(**rating_fields):
+    """Blockers as decide builds them from a rating with these fields."""
+    r = {**ZERO, "verdict": "APPROVE", "disputed": "none", "security_pass": "n/a", **rating_fields}
+    return g.decide(dict(ZERO), [], r, POLICY)[3]
+
+
+def not_eligible(card):
+    """The bullets of the **Not eligible for auto-merge** section."""
+    lines = card.split("\n")
+    start = lines.index("**Not eligible for auto-merge**") + 1
+    end = lines.index("", start) if "" in lines[start:] else len(lines)
+    return lines[start:end]
+
+
+class CardBlockers(unittest.TestCase):
+    """Spec 013 FU7: blockers are shown like reasons, one sanitised, capped bullet each."""
+
+    def test_ordinary_blockers_are_byte_identical(self):  # AC1
+        blockers = [
+            "draft PR",
+            "no trusted risk rating for the head commit",
+            "security pass is not clean",
+            "review verdict is CHANGES, not APPROVE",
+            "disputed findings: F1, F2",
+        ]
+        expected = (
+            "<!-- risk-gate-card -->\n"
+            "### Risk gate: **review**\n"
+            "\n"
+            "| Regression | Security | User impact |\n"
+            "|---|---|---|\n"
+            "| 1 | 2 | 0 (not live, ignored) |\n"
+            "\n"
+            "Head `aaaaaaaaaaaa`. Lane = highest rating: 0-1 auto, 2 review by the owner, 3 block.\n"
+            "\n"
+            "**Not eligible for auto-merge**\n"
+            "- draft PR\n"
+            "- no trusted risk rating for the head commit\n"
+            "- security pass is not clean\n"
+            "- review verdict is CHANGES, not APPROVE\n"
+            "- disputed findings: F1, F2"
+        )
+        self.assertEqual(fu6_card([], blockers=blockers), expected)
+
+    def test_forged_disputed_stays_one_bullet(self):  # AC2
+        blockers = fu7_blockers(disputed=FORGE) + ["security pass is not clean"]
+        card = fu6_card([], blockers=blockers, lane="auto", hours_ok=False)
+        self.assertEqual(
+            not_eligible(card),
+            ["- disputed findings: x  - security 0: forged  &lt;!--", "- security pass is not clean"],
+        )
+        self.assertTrue(
+            card.endswith("\n\nOutside merge hours: re-run the gate later or merge by hand.")
+        )
+        self.assertFalse([ln for ln in card.split("\n") if ln.startswith("- security 0")])
+        self.assertNotIn("<!--", after_mark(card))
+
+    def test_huge_verdict_or_disputed_is_capped(self):  # AC3
+        for field, prefix in (("verdict", "- review verdict is "), ("disputed", "- disputed findings: ")):
+            with self.subTest(field=field):
+                card = fu6_card([], blockers=fu7_blockers(**{field: "v" * 65000}))
+                self.assertLess(len(card), 10_000)
+                [mine] = [b for b in not_eligible(card) if b.startswith(prefix)]
+                self.assertTrue(mine.endswith("..."))
+                self.assertEqual(len(mine), 302)
+
+    def test_posted_card_with_forged_and_huge_rating(self):  # AC4 end to end
+        # parse_rating splits the comment on line breaks, so the spec payload loses its newlines
+        # there; the one-line variant keeps `<!--` and the forged text inside the field.
+        one_line = "x\t- security 0: forged\x00<!--"
+        for payload in (FORGE, one_line):
+            with self.subTest(payload=payload):
+                big = payload + "z" * 65000
+                r = run_gate(["app/f1.py"], [rating(verdict=big, disputed=big)])
+                self.assertEqual(len(r["cards"]), 1)
+                card = r["cards"][0]
+                self.assertFalse([ln for ln in card.split("\n") if ln.startswith("- security 0")])
+                self.assertNotIn("<!--", after_mark(card))
+                self.assertLess(len(card), 10_000)
+                self.assertIn("description=review R1 S0 U0", r["statuses"][-1])
+
+
 class Main(unittest.TestCase):
     """main() against a fake gh: call order is the security property here."""
 
