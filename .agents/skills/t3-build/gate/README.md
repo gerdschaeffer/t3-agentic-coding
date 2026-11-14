@@ -145,7 +145,8 @@ changed; `main` maps a missing or null `status` to `unknown`, which counts as ch
 without the field fails closed.
 
 Two fold rules keep the floor from being dodged by a name (Sol security pass, spec 022). The
-case-folded pass compares paths and patterns after NFKC and `casefold()`, so `docs/ſpecs/x.md`
+case-folded pass is the higher of two keyings, `lower()` and NFKC plus `casefold()` (NFKC alone can
+lower a floor: it composes `N` and U+0303 into `Ñ`), so `docs/ſpecs/x.md`
 (U+017F) is the spec directory on a case-folding checkout and rates like `docs/specs/x.md`; the
 exact pass is unchanged. And `main` lists the head tree: an `added` file whose folded name equals
 another path of the tree (a `tests/test_login.py` next to `tests/test_Login.py`, which replaces it

@@ -53,8 +53,8 @@ def _fold(s):
 def rate_files(files, policy, fold=False):
     """Deterministic floor from changed paths and diff size: (scores, reasons).
 
-    fold compares paths and patterns NFKC-casefolded: a case-insensitive checkout treats
-    claude.md as CLAUDE.md.
+    fold takes the higher of two keyings, lower() and NFKC-casefold: a case-insensitive checkout
+    treats claude.md as CLAUDE.md.
     """
     return _score(_found(files, policy, fold))
 
@@ -65,7 +65,13 @@ def floor(files, policy):
 
 
 def _found(files, policy, fold):
-    key = _fold if fold else (lambda s: s)
+    # The folded pass is the higher of two keyings: lower() (a composed or fullwidth character
+    # must not lower a floor) and NFKC-casefold (ſ folds to s).
+    keys = (str.lower, _fold) if fold else (lambda s: s,)
+    return [hit for key in keys for hit in _found_with(files, policy, key)]
+
+
+def _found_with(files, policy, key):
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
         found.append(("regression", 3, f"{len(files)} files: too large to rate, split the PR"))
