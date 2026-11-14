@@ -4,6 +4,8 @@
 Usage: tier.py [--policy FILE] [--trigger NAME]... -- PATH...
 Put "--" before the paths so a path starting with "-" is not read as an option.
 A non-ASCII path is tiered at least T2; guardrails also match its NFKC-casefold form (spec 010).
+Passes no file status, so a test path is not rated as a changed existing test (the gate does that
+on the finished PR); a spec or runbook path rates 2 and is T2 (spec 022).
 Reuses the risk gate's matching, floor and no_rating check. No network, no subprocess, no writes.
 """
 

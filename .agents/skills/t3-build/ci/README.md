@@ -109,7 +109,9 @@ limited.
   `pull_request`). The PR that installs the guards passes with a notice and is merged by hand. The
   workflows also re-run when the base branch of a PR is edited.
 - A spec change in the diff authorizes every removed test or shrinking assertion `diff_guard`
-  finds, and it passes with a plain `notice:` line in a green job: read that line.
+  finds, and it passes with a plain `notice:` line in a green job: read that line. The gate
+  rates a spec change (and a change to an existing test file) regression 2, so such a pull
+  request lands in the review lane and a human reads it ([gate README](../gate/README.md)).
 - `diff_guard` knows these test paths only: `*/tests/*`, `*/test/*`, `*/test_*`, `*_test.*`,
   `*.test.*`, `*.spec.*` (the gate's own list). `__tests__/`, `spec/` and `*_spec.*` are not
   covered.
