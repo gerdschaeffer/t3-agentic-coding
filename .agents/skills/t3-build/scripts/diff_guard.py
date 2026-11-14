@@ -18,10 +18,12 @@ decides whether it is relevant. False negatives: an equal-count rewrite (`assert
 assertion lines. Two paths that differ only by case are not handled specially. The human reviews
 the diff in every case.
 
-SIGTERM is deferred: the handler only sets a flag, run_git sees it within 0.1 s, kills git's process
-group, reaps git (at most 5 s) and the script exits 143. A group kill that fails, or a reap that
-does not finish, is exit 2 (`could not terminate git`). SIGKILL of the script cannot be handled, so
-git's group is then left to the runner.
+SIGTERM is deferred only while git runs: run_git installs a flag-setting handler right before it
+starts git and restores the previous one after git is reaped; elsewhere SIGTERM has its default
+effect. run_git sees the flag within 0.1 s, kills git's process group, reaps git (at most 5 s), and
+after the restore the script exits 143. A group kill that fails, or a reap that does not finish, is
+exit 2 (`could not terminate git`). SIGKILL of the script cannot be handled, so git's group is then
+left to the runner.
 """
 
 import argparse
@@ -85,12 +87,30 @@ def run_git(args, repo):
     # No inherited git behaviour (GIT_DIR, pathspec modes, config, ...) and no lazy fetch from a promisor.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
+    global stopped
+    stopped = False
+    previous = signal.signal(signal.SIGTERM, on_sigterm)  # only while a child runs (AC36)
     try:
-        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                             env=env, start_new_session=True)
-    except OSError:
-        die("cannot run git")
-    deadline, out, code = time.monotonic() + GIT_TIMEOUT, bytearray(), None
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 env=env, start_new_session=True)
+        except OSError:
+            die("cannot run git")
+        out = bytearray()
+        code = run_child(p, time.monotonic() + GIT_TIMEOUT, out)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    if stopped:  # decided after the restore, so a SIGTERM that came at the restore is not lost (AC37)
+        sys.exit(143)
+    if code:
+        die(f"git {args[0]} failed (exit {code}): not a repository or unknown revision")
+    return bytes(out)
+
+
+def run_child(p, deadline, out):
+    """git's exit code (None after a SIGTERM); its output goes to out. The cleanup always kills the group
+    (unless git was reaped) and reaps git."""
+    code = None
     try:
         fd = p.stdout.fileno()
         while not stopped:
@@ -130,11 +150,7 @@ def run_git(args, repo):
         p.stdout.close()
         if failed:
             die("could not terminate git")
-        if stopped:
-            sys.exit(143)
-    if code:
-        die(f"git {args[0]} failed (exit {code}): not a repository or unknown revision")
-    return bytes(out)
+    return code
 
 
 def matches(path, pattern):
@@ -212,17 +228,6 @@ def on_sigterm(signum, frame):
 
 
 def main(argv=None):
-    global stopped
-    stopped = False
-    previous = signal.signal(signal.SIGTERM, on_sigterm)
-    try:
-        code = run(argv)
-        return 143 if stopped else code  # a SIGTERM that came after the last git call
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-
-
-def run(argv):
     ap = argparse.ArgumentParser(description="Fail when tests or assertions are removed without a spec change.")
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)

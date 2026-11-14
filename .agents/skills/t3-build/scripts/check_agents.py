@@ -8,7 +8,8 @@ Exit 0: every agent file matches its row. Exit 1: drift, or input over a bound. 
 arguments, an unreadable or malformed models.md, an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
 Reads files only. Symlinks are problems, never followed, --root included. Each agents folder is opened
-once (walked from --root, O_NOFOLLOW) and listed and read only through that descriptor.
+once (walked from --root, O_NOFOLLOW) and listed and read only through that descriptor; each agent file is
+opened O_NOFOLLOW|O_NONBLOCK and must be a regular file by fstat before it is read.
 --models: empty, a `..` component or an empty component (`//`, a trailing /) is exit 2; `.` components
 are dropped. It is inside --root when a lexical ancestor is the same folder as --root (os.path.samefile,
 the shallowest one counts); then no component below that ancestor may be a symlink. One outside has only
@@ -181,8 +182,12 @@ def find_folders(root):
 def check_file(folder, dir_fd, name, rel, stem, rows, problems):
     """Checks one regular agent file, opened through its folder's fd; True when it was read and checked."""
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        # Non-blocking and fstat-checked: the entry may have become a FIFO since the folder scan.
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
         with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                problems.append(f"{plain(rel)}: not a regular file")
+                return False
             data = f.read(MAX_AGENT_BYTES + 1)
     except OSError:
         problems.append(f"{plain(rel)}: unparsable (unreadable)")
