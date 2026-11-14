@@ -39,7 +39,7 @@ Not touched: `risk-gate.yml`, the `no_rating` list, CI, branch protection.
 | AC2 | Case variants rate like the original through `floor`: `.OpenCode/x`, `.Claude/settings.json`, `.AGENTS/skills/x/SKILL.md`, `.Codex/x`, `Opencode.JSON`, `.CURSOR/rules/x.mdc`, `CLAUDE.MD`, `docs/Agents.md` (3), `.GitHub/workflows/ci.yml` (3). | tests |
 | AC3 | `floor` never lowers a score: for every path in a table (ordinary code, docs, tests, `README.MD`, `Docs/x.py`, `Tests/x.py`, `app/Auth/x.py`, `package.json`, `PACKAGE.JSON`) each dimension of `floor` is at least that of `rate_files(..., fold=False)`. `README.MD` stays 1 (not lowered to 0 by the docs rule). | tests |
 | AC4 | The reasons of `floor` name only the deciding level per dimension and are deduplicated; renamed files are rated under both names as before. | tests |
-| AC5 | `main` uses `floor`: a dry-run PR touching `.Claude/x` shows lane block and the reason. Existing tests pass unchanged (`rate_files`, `exempt_from_rating`, exemption tests). | tests |
+| AC5 | `main` uses `floor`: a dry-run PR touching `.Claude/x` shows lane block and the reason. Existing tests pass unchanged except two assertions in `Amendment.test_exemption_survives_case_variants_of_instruction_files` that record the behaviour this change ends: `.OpenCode/opencode.json` rates 3 (was 1), and `main` rates `docs/user/Claude.md` block (was auto). | tests |
 | AC6 | `tier.GUARDRAIL` contains the three new patterns; the WP2 drift test (AC9) passes. | existing test |
 | AC7 | `gate/README.md` describes the three patterns and that the floor is case-folded for every path. | review |
 
