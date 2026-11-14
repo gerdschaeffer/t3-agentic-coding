@@ -1378,7 +1378,9 @@ AC39_CASES = ("stale-base", "not-merge", "head-mismatch")
 
 
 def check_trigger_types(text, name):
-    """AC39 (F3): the guard templates trigger on pull_request with exactly these four types."""
+    """AC39 (F3): the guard templates trigger on pull_request with exactly these four types.
+    The other pull_request keys are checked by check_branch_filter (spec 016 FU9 supersedes the
+    former "no filter other than types" rule)."""
     doc, p = parsed(text)
     if p:
         return p
@@ -1387,8 +1389,6 @@ def check_trigger_types(text, name):
     types = pr.get("types") if isinstance(pr, dict) else None
     if not isinstance(types, list) or len(types) != len(TRIGGER_TYPES) or sorted(map(str, types)) != sorted(TRIGGER_TYPES):
         p.append(f"pull_request types {types!r} are not exactly {TRIGGER_TYPES}")
-    if isinstance(pr, dict) and set(pr) != {"types"}:
-        p.append(f"pull_request has filters other than types: {sorted(pr)}")
     return p
 
 
@@ -1469,7 +1469,6 @@ class TestSecondPassAC39MergeCommitBase(TempCase):
             ("edited dropped", types_drop),
             ("labeled added", types_add),
             ("types removed", lambda t, n: del_line(t, r"^\s*types:")),
-            ("branches filter", lambda t, n: sub1(t, r"^(  pull_request:[^\n]*\n)", r"\1    branches: [main]\n")),
         ])
 
     def test_static_merge_base_mutations(self):
@@ -1701,7 +1700,6 @@ class TestSecondPassR2AC45CiTriggerTypes(MutationCase):
             ("edited dropped", types_drop),
             ("labeled added", types_add),
             ("types removed", lambda t, n: del_line(t, r"^\s*types:")),
-            ("branches filter", lambda t, n: sub1(t, r"^(  pull_request:[^\n]*\n)", r"\1    branches: [main]\n")),
         ], names=("ci",))
 
 
@@ -1805,6 +1803,146 @@ class TestSecondPassR2AC47ReadmeTrustRoot(unittest.TestCase):
         self.assertNotEqual(self.problems("The trust root is the Makefile and everything it calls.\n\n"
                                           "Scripts follow the ordinary rules.\n"), [])
 
+
+
+# ================================================================ FU9: branch filter (spec 016)
+
+BRANCHES = ["main"]
+
+
+def check_branch_filter(text, name):
+    """FU9 AC1: on: pull_request: has exactly the keys types and branches, types are the four of
+    AC39/AC45 and branches is exactly [main] (a PR against another base starts no run: fail closed)."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    on = doc.get("on")
+    pr = on.get("pull_request") if isinstance(on, dict) else None
+    if not isinstance(pr, dict) or set(pr) != {"types", "branches"}:
+        p.append(f"pull_request keys {sorted(pr) if isinstance(pr, dict) else pr!r} are not exactly types and branches")
+    elif pr["branches"] != BRANCHES:
+        p.append(f"pull_request branches {pr['branches']!r} are not exactly {BRANCHES}")
+    return p + check_trigger_types(text, name)
+
+
+# The branches entry: a flow line or a key followed by block list items.
+BRANCHES_ENTRY = r"^(    )branches:[^\n]*\n(?:\1(?:  )?- [^\n]*\n)*"
+
+
+def set_branches(t, *lines):
+    return sub1(t, BRANCHES_ENTRY, "".join(r"\g<1>" + l.replace("\\", "\\\\") + "\n" for l in lines))
+
+
+def pr_key_add(line):
+    return lambda t, n: sub1(t, r"^(  pull_request:[^\n]*\n)", r"\1    " + line + r"\n")
+
+
+class TestFU9AC1BranchFilter(unittest.TestCase):
+    """FU9 AC1: each of the four templates filters pull_request on branches: [main] next to types."""
+
+    def test_static(self):
+        for n in TEMPLATES:
+            with self.subTest(template=n):
+                t = read(self, n)
+                self.assertEqual(check_branch_filter(t, n), [])
+                self.assertEqual(check_trigger(t, n), [])
+                self.assertEqual(check_trigger_types(t, n), [])
+
+    def test_checker_self_test(self):
+        head = "name: x\non:\n  pull_request:\n    types: [opened, synchronize, reopened, edited]\n"
+        tail = "permissions:\n  contents: read\n"
+        self.assertEqual(check_branch_filter(head + "    branches: [main]\n" + tail, "x"), [])
+        self.assertEqual(check_branch_filter(head + "    branches:\n      - main\n" + tail, "x"), [])
+        for bad in ("", "    branches: main\n", "    branches: []\n", "    branches: [main, main]\n",
+                    "    branches: [Main]\n", "    branches:\n" ):
+            with self.subTest(branches=bad):
+                self.assertNotEqual(check_branch_filter(head + bad + tail, "x"), [])
+
+
+class TestFU9AC2BranchFilterMutations(MutationCase):
+    """FU9 AC2: mutations of the filter are caught; the existing trigger checks keep working."""
+
+    def test_mutations(self):
+        self.assert_catches(check_branch_filter, [
+            ("branches missing", lambda t, n: set_branches(t)),
+            ("branches [main, release]", lambda t, n: set_branches(t, "branches: [main, release]")),
+            ("branches ['**']", lambda t, n: set_branches(t, "branches:", "  - '**'")),
+            ("branches [develop]", lambda t, n: set_branches(t, "branches: [develop]")),
+            ("branches-ignore instead", lambda t, n: set_branches(t, "branches-ignore: [main]")),
+            ("branches-ignore added", pr_key_add("branches-ignore: [develop]")),
+            ("paths added", pr_key_add("paths: [src/**]")),
+            ("paths-ignore added", pr_key_add("paths-ignore: [docs/**]")),
+            ("edited dropped", types_drop),
+            ("labeled added", types_add),
+            ("types removed", lambda t, n: del_line(t, r"^\s*types:")),
+        ])
+
+    def test_trigger_checks_still_work(self):
+        self.assert_catches(check_trigger, [
+            ("pull_request_target", lambda t, n: replace_on(t, "pull_request_target")),
+            ("push added", lambda t, n: add_trigger(t, "push")),
+            ("inputs named", pr_key_add("inputs: [x]")),
+        ])
+
+
+class TestFU9AC4ReadmeSharedCheckRuns(unittest.TestCase):
+    """FU9 AC4: the README section on shared check runs explains the branch filter."""
+
+    HEADING = "Known design limit: shared check runs"
+
+    @classmethod
+    def problems(cls, text):
+        m = re.search(rf"(?ms)^## {re.escape(cls.HEADING)}[ \t]*\n(.*?)(?=^## |\Z)", text)
+        if not m:
+            return [f"no README section '## {cls.HEADING}'"]
+        sec, p = m.group(1), []
+        for tok in ("branches", "main", "ruleset"):
+            if not re.search(rf"(?<![\w-]){tok}(?![\w-])", sec):
+                p.append(f"the section does not name {tok}")
+        paras = re.split(r"\n\s*\n", sec)
+        if not any(re.search(r"(?i)\breplace\b", s) and re.search(r"\bmain\b", s)
+                   and re.search(r"(?i)\bdefault branch\b", s) and re.search(r"(?i)\ball four\b", s) for s in paras):
+            p.append("no paragraph says to replace main by the default branch in all four files")
+        if not any(re.search(r"(?i)\brequired checks?\b", s) and re.search(r"(?i)\bpending\b", s)
+                   and re.search(r"(?i)\b(?:other|another)\b[^.]*\bbranch|\bnot in the list\b", s) for s in paras):
+            p.append("no paragraph says a required check stays pending for a PR against another base branch")
+        if not any(re.search(r"(?i)\bpush(?:es)? (?:a |the )?base branch", s) and re.search(r"\bruleset\b", s)
+                   for s in paras):
+            p.append("no paragraph says the base-branch-pusher variant stays and a ruleset is the full fix")
+        if re.search(r"(?i)forbid a filter", sec):
+            p.append("the section still says the template tests forbid a filter")
+        return p
+
+    def test_readme(self):
+        self.assertTrue(README.is_file(), f"README missing: {README}")
+        self.assertEqual(self.problems(README.read_text()), [])
+
+    def test_checker_self_test(self):
+        replace = ("The four workflows have `branches: [main]` under `pull_request:`. Replace `main` by the "
+                   "repo's default branch in all four files.")
+        pending = ("A pull request against a branch not in the list starts no run, so a required check stays "
+                   "pending and it cannot merge (fail closed).")
+        pusher = ("This closes the variant any author can use. Someone who can push a base branch can still "
+                  "do it; a ruleset with required workflows pinned to a ref is the full fix.")
+        ok = f"# CI\n\n## {self.HEADING}\n\nShared runs.\n\n{replace}\n\n{pending}\n\n{pusher}\n\n## Secrets\n\nNone.\n"
+        self.assertEqual(self.problems(ok), [])
+        for label, bad in [
+            ("heading", ok.replace(f"## {self.HEADING}", "## Shared runs")),
+            ("ruleset", ok.replace("a ruleset with", "a setting with")),
+            ("branches", ok.replace("`branches: [main]`", "a filter")),
+            ("replace statement", ok.replace(replace, "The four workflows have `branches: [main]` under `pull_request:`.")),
+            ("all four", ok.replace("in all four files", "in ci.yml")),
+            ("default branch", ok.replace("repo's default branch", "release branch")),
+            ("pending statement", ok.replace(pending, "")),
+            ("pending", ok.replace("stays pending", "fails")),
+            ("other base branch", ok.replace("a branch not in the list", "main")),
+            ("pusher variant", ok.replace("Someone who can push a base branch can still do it; ", "")),
+            ("stale forbid note", ok.replace("Shared runs.", "Not in the templates, whose tests forbid a filter.")),
+            ("statement outside the section", ok.replace(f"\n\n{replace}", "").replace("None.", replace)),
+        ]:
+            with self.subTest(removed=label):
+                self.assertNotEqual(bad, ok)
+                self.assertNotEqual(self.problems(bad), [], f"the checker missed: {label}")
 
 if __name__ == "__main__":
     unittest.main()
