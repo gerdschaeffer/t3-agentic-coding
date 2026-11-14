@@ -572,5 +572,26 @@ class TestAC14SourceScan(unittest.TestCase):
         self.assertNotIn("subprocess", mods, "check_agents starts no process")
 
 
+# ---------------------------------------------------------------- review round 1 (spec section 3)
+
+class TestReviewRound1RootSymlink(Base):
+    """Section 3: symlinks are never followed, and that includes --root itself."""
+
+    def test_root_that_is_a_symlink_is_not_followed(self):
+        real = self.root()  # a valid staging-shaped tree in the temp dir
+        self.clean(self.check(real))  # fixture: the real folder is clean
+        link = self.tmp / "linked-root"
+        link.symlink_to(real, target_is_directory=True)
+        cp = self.check(link)
+        self.assertEqual(cp.returncode, 1, f"exit {cp.returncode}; stdout={cp.stdout!r}; stderr={cp.stderr!r}")
+        lines = cp.stdout.splitlines()
+        self.assertEqual(len(lines), 1, f"want one problem line, stdout:\n{cp.stdout}")
+        self.assertRegex(lines[0], rf"^{P}{re.escape(link.name)}/?: not a regular folder$")
+        self.assertNotIn("files match models.md", cp.stdout)
+
+    def test_same_fixture_without_the_symlink_passes(self):
+        self.clean(self.check(self.root()))
+
+
 if __name__ == "__main__":
     unittest.main()

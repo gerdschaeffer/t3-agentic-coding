@@ -1118,5 +1118,99 @@ class TestAC20RunGit(Base):
         self.assertIsNotNone(raised, "MAX_BYTES + 1 accepted")
 
 
+# ---------------------------------------------------------------- review round 1 (AC8, section 6)
+
+ATTR_DIFF = "*.py diff\n"  # forces a text patch even for a file with NUL bytes
+PAD = "# " + "x" * 9000 + "\n"  # one comment line spanning byte 8000
+
+
+def nul_at(text, index):
+    """`text` as bytes with the pad character at `index` replaced by a NUL."""
+    data = text.encode()
+    assert data[index:index + 1] == b"x", f"fixture: no pad character at {index}"
+    return data[:index] + b"\0" + data[index + 1:]
+
+
+class TestReviewRound1BinaryFromBlobs(Base):
+    """Binary status of a test file comes from its old and new blobs (NUL in the first 8000 bytes,
+    git's rule), never from the patch: a `diff` attribute makes git print a text patch for a file
+    with NUL bytes, which would hide a text-to-binary change."""
+
+    def attr_pair(self, before, after, extra_after=None):
+        before = dict({".gitattributes": ATTR_DIFF}, **before)
+        after = dict({".gitattributes": ATTR_DIFF}, **after, **(extra_after or {}))
+        r, base, head = self.pair(before, after)
+        r.git("checkout", "-q", "-f", "agent/x")  # attributes are read from the work tree, as in CI
+        return r, base, head
+
+    def text_patch(self, r, base, head, path):
+        """Fixture: plain git prints a text patch for `path` despite the NUL byte."""
+        out = r.raw("diff", "--no-ext-diff", "--no-textconv", base, head, "--", path)
+        self.assertNotIn(b"Binary files ", out, "fixture: the attribute forces a text patch")
+        self.assertIn(b"\0", out, "fixture: the NUL byte is in the patch")
+        self.assertFalse(r.numstat(base, head, path).startswith("-\t-\t"), "fixture: numstat shows counts")
+
+    # (a)
+    def test_text_to_binary_under_diff_attribute_fails(self):
+        r, base, head = self.attr_pair({"test_a.py": "assert True\n"}, {"test_a.py": b"assert True\n\0binary\n"})
+        self.assertEqual([s[0] for s in r.status(base, head)], ["M"])
+        self.text_patch(r, base, head, "test_a.py")
+        self.violations(self.guard(r, base, head), type_changed("test_a.py"))
+
+    # (b)
+    def test_text_shrink_under_diff_attribute_fails(self):
+        r, base, head = self.attr_pair({"tests/test_a.py": PY}, {"tests/test_a.py": drop(PY, "        assert x == 3")})
+        self.violations(self.guard(r, base, head), shrink("tests/test_a.py", 1, 0))
+
+    def test_text_equal_counts_under_diff_attribute_passes(self):
+        after = PY.replace("        assert x == 3\n", "        assert x == 33\n", 1)
+        r, base, head = self.attr_pair({"tests/test_a.py": PY}, {"tests/test_a.py": after})
+        self.clean(self.guard(r, base, head), n=1)
+
+    # (c)
+    def test_binary_to_binary_under_diff_attribute_passes(self):
+        r, base, head = self.attr_pair({"test_a.py": b"assert True\n\0old\n"}, {"test_a.py": b"assert True\n\0new\n"})
+        self.assertEqual([s[0] for s in r.status(base, head)], ["M"])
+        self.text_patch(r, base, head, "test_a.py")
+        self.clean(self.guard(r, base, head), n=1)
+
+    # (d)
+    def test_text_to_binary_under_diff_attribute_with_spec_passes_with_notice(self):
+        r, base, head = self.attr_pair({"test_a.py": "assert True\n", "docs/specs/x/spec.md": "# Spec x\n\nv1\n"},
+                                       {"test_a.py": b"assert True\n\0binary\n", "docs/specs/x/spec.md": "# Spec x\n\nv2\n"})
+        self.text_patch(r, base, head, "test_a.py")
+        self.exempt(self.guard(r, base, head), "docs/specs/x/spec.md", type_changed("test_a.py"))
+
+    # (f) the 8000-byte boundary of git's rule: index 8000 is outside it, index 7999 inside
+    def boundary(self, head_text, index, attr):
+        before, after = {"tests/test_a.py": PY + PAD}, {"tests/test_a.py": nul_at(head_text + PAD, index)}
+        if attr:
+            return self.attr_pair(before, after)
+        return self.pair(before, after)
+
+    def test_git_agrees_on_the_8000_byte_boundary(self):
+        for index, binary in ((8000, False), (7999, True)):
+            with self.subTest(index=index):
+                r, base, head = self.boundary(PY, index, attr=False)
+                self.assertEqual(r.numstat(base, head, "tests/test_a.py").startswith("-\t-\t"), binary)
+
+    def test_nul_after_8000_bytes_is_text_and_shrink_fails(self):
+        for attr in (False, True):
+            with self.subTest(attr=attr):
+                r, base, head = self.boundary(drop(PY, "        assert x == 3"), 8000, attr)
+                self.violations(self.guard(r, base, head), shrink("tests/test_a.py", 1, 0))
+
+    def test_nul_after_8000_bytes_is_text_and_equal_counts_pass(self):
+        after = PY.replace("        assert x == 3\n", "        assert x == 33\n", 1)
+        for attr in (False, True):
+            with self.subTest(attr=attr):
+                r, base, head = self.boundary(after, 8000, attr)
+                self.clean(self.guard(r, base, head), n=1)
+
+    def test_nul_within_8000_bytes_under_diff_attribute_is_binary(self):
+        r, base, head = self.boundary(PY, 7999, attr=True)
+        self.violations(self.guard(r, base, head), type_changed("tests/test_a.py"))
+
+
 if __name__ == "__main__":
     unittest.main()
