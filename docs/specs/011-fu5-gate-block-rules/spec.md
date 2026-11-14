@@ -9,7 +9,7 @@ config"). Lead writes this spec. MUST as in RFC 2119.
 ## 1. Changes
 
 1. **Block rule** "CI, deploy, gate or agent config" in `risk-policy.toml` gets
-   `"*/opencode.json"`, `"*/opencode.jsonc"` and `"*/.cursor/*"` (they steer agents like
+   `"*/opencode.json"`, `"*/opencode.jsonc"`, `"*/.cursor/*"`, `"*/.cursorrules"` and `"*/.cursorignore"` (review round 1 added the last two: legacy Cursor instructions and the access ignore list) (they steer agents like
    `.opencode/` and `.claude/`). `tier.GUARDRAIL` gets the same three (AC9 drift test of WP2).
 2. **Case-insensitive floor.** The per-file floor the gate computes in `main` MUST be the larger,
    per dimension, of `rate_files(..., fold=False)` and `rate_files(..., fold=True)`. A new

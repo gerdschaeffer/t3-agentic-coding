@@ -79,7 +79,7 @@ paths = [".github/*", "*/Dockerfile*", "*/docker-compose*", "*/deploy/*", "*/inf
          "*/AGENTS.md", "*/AGENTS.override.md", "*/AGENT.md", "*/CLAUDE.md", "*/CLAUDE.local.md",
          "*/GEMINI.md", "*/WARP.md", "*/CRUSH.md", "*/CRUSH.local.md", "*/QWEN.md",
          "*/.claude/*", "*/.codex/*", "*/.opencode/*", "*/.agents/*", "*/.mcp.json",
-         "*/opencode.json", "*/opencode.jsonc", "*/.cursor/*"]
+         "*/opencode.json", "*/opencode.jsonc", "*/.cursor/*", "*/.cursorrules", "*/.cursorignore"]
 regression = 3
 
 # Payments and personal data: fill the paths from the project's threat model, then uncomment

@@ -274,10 +274,10 @@ class AC9Drift(Base):
 class FU5Guardrail(Base):  # docs/specs/011-fu5-gate-block-rules/spec.md AC6
     def test_fu5_opencode_and_cursor_are_guardrail(self):
         t = tier_mod()
-        for p in ("*/opencode.json", "*/opencode.jsonc", "*/.cursor/*"):
+        for p in ("*/opencode.json", "*/opencode.jsonc", "*/.cursor/*", "*/.cursorrules", "*/.cursorignore"):
             with self.subTest(pattern=p):
                 self.assertIn(p, t.GUARDRAIL)
-        for p in ("opencode.json", "sub/opencode.jsonc", ".cursor/rules/x.mdc"):
+        for p in ("opencode.json", "sub/opencode.jsonc", ".cursor/rules/x.mdc", ".cursorrules", ".cursorignore"):
             with self.subTest(path=p):
                 self.assertEqual(t.classify([p], POLICY)[0], "human")
 

@@ -1010,9 +1010,10 @@ class AmendmentRound2(unittest.TestCase):
 # FU5 (docs/specs/011-fu5-gate-block-rules/spec.md): opencode.json, .cursor/, case-folded floor.
 
 AGENT_RULE = "CI, deploy, gate or agent config"
-FU5_PATTERNS = ("*/opencode.json", "*/opencode.jsonc", "*/.cursor/*")
+# Round 1 review added the legacy Cursor files: instructions and the access ignore list.
+FU5_PATTERNS = ("*/opencode.json", "*/opencode.jsonc", "*/.cursor/*", "*/.cursorrules", "*/.cursorignore")
 FU5_PATHS = ("opencode.json", "opencode.jsonc", "sub/opencode.json", ".cursor/rules/x.mdc",
-             ".cursor/mcp.json")
+             ".cursor/mcp.json", ".cursorrules", "sub/.cursorrules", ".cursorignore")
 FU5_CASE_VARIANTS = (  # (variant, original)
     (".OpenCode/x", ".opencode/x"),
     (".Claude/settings.json", ".claude/settings.json"),

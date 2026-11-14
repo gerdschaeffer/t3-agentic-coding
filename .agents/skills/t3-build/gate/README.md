@@ -157,8 +157,8 @@ that has the list; they are not covered by the dated decision above):
    `risk-policy.toml` (between `# BEGIN TEMPLATE payments-personal-data` and
    `# END TEMPLATE payments-personal-data`) from the threat model and uncomment it.
 
-Agent config under `.opencode/` and `.cursor/`, and `opencode.json` or `opencode.jsonc` in any
-directory, block like `.claude/` and `.codex/`. The gate's floor is case-folded for every path:
+Agent config under `.opencode/` and `.cursor/`, and `opencode.json`, `opencode.jsonc`,
+`.cursorrules` or `.cursorignore` in any directory, block like `.claude/` and `.codex/`. The gate's floor is case-folded for every path:
 the larger of the exact and the lowercased rating counts, so `.Claude/x` and `Opencode.JSON`
 block too. A case variant never rates lower than the exact name. The tests
 `test_shipped_no_rating_list_is_minimal` and
