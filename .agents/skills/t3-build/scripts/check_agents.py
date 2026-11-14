@@ -31,7 +31,7 @@ MAX_AGENT_BYTES = 64 * 1024  # per file
 MAX_MODELS_BYTES = 1_000_000
 FRONT_LINES = 100  # the closing --- must come within this many lines
 HEADER = "| Agent file | Role | Provider | Model | Effort |"
-CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")  # C0, DEL, C1, line and paragraph separators
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")  # a top-level front-matter key
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}")
@@ -174,7 +174,8 @@ def parse(folder, data):
         return front_matter(text)
     try:
         return tomllib.loads(text), None
-    except (tomllib.TOMLDecodeError, RecursionError):  # deep nesting overflows the parser's stack (AC44)
+    # Deep nesting overflows the parser's stack (AC44); a huge integer hits the int-digits limit (AC49).
+    except (ValueError, RecursionError):  # TOMLDecodeError is a ValueError
         return None, "invalid TOML"
 
 
@@ -279,7 +280,8 @@ def check_folder(folder, fd, rel_folder, rows, problems):
     try:
         with os.scandir(fd) as it:
             for e in it:
-                if e.name.endswith(ext) or e.is_dir(follow_symlinks=False):
+                # Every symlink is listed, whatever its name or target (AC48); extensions in any case (AC51).
+                if e.name.lower().endswith(ext) or e.is_dir(follow_symlinks=False) or e.is_symlink():
                     entries.append(e)
                     if len(entries) > MAX_AGENT_FILES:
                         break

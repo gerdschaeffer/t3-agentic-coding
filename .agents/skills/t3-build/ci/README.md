@@ -43,10 +43,21 @@ run. No other action is used and none may be added without a SHA.
 
 ## The Makefile is the trust root of `ci.yml`
 
-The Makefile is the trust root of `ci.yml`: it runs `make <target>` from the PR, so the Makefile (and any `*.mk`) decides what the eight
-checks do: a PR that turns `test:` into `@true` makes `ci` green. The gate policy rates
-`/Makefile`, `/GNUmakefile`, `/makefile` and `*.mk` as root tool config (regression 2, review
-lane), so such a change is never auto-merged. Keep it that way and read Makefile changes.
+The Makefile is the trust root of `ci.yml`: it runs `make <target>` from the PR, so the Makefile
+and everything it calls decide what the eight checks do (a PR that turns `test:` into `@true`
+makes `ci` green). The gate policy rates a Makefile in any folder (`Makefile`, `GNUmakefile`,
+`makefile`, `Makefile.inc`) and `*.mk` as root tool config (regression 2, review lane), so such a
+change is never auto-merged. A script that the Makefile runs is rated by the ordinary rules of the
+policy, so read those changes too.
+
+## Known design limit: shared check runs
+
+Check runs are keyed by head SHA and name. Two pull requests with the same head (one against a base
+branch that predates the guards, one against `main`) share them, and the newest run counts, so a
+person who can push a base branch can leave green runs on the head. Fork authors cannot: add
+`branches: [main]` under `pull_request:` in the four workflows to limit this. The full fix is a
+gate or ruleset that checks that each required run belongs to this PR number; it is not part of
+these templates.
 
 ## Secrets
 
