@@ -69,7 +69,8 @@ reason = "repo root: tool config and modules that shadow imports"
 # running it. Adapt the list to the repo's stack.
 paths = ["/*.py", "/*.pyc", "/*.so", "/*.pth", "/*.ini", "/*.cfg", "/*.toml", "/.*rc",
          "/.python-version", "/*/__init__.*", "/*.dist-info/*", "/*.egg-info/*",
-         "/*.config.*", "/.*rc.*"]
+         "/*.config.*", "/.*rc.*", "/Makefile", "/GNUmakefile", "/makefile", "*.mk",
+         "*/Makefile*", "*/GNUmakefile*", "*/makefile*"]
 regression = 2
 
 [[rule]]

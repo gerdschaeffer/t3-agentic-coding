@@ -18,5 +18,5 @@ Rules:
 - Retries and escalations: list the agent once per model used.
 - `Tier:` is T0, T1 or T2.
 - A human-only commit needs no trailers.
-- The `commit-trailers` CI job (WP9) fails a commit on a branch named `agent/*` without at least one `Agent:` and one `Tier:` trailer. The monthly retro reads these trailers next to `events.jsonl` and cross-checks them.
+- The `commit-trailers` CI job (WP9, [ci/README.md](../ci/README.md)) fails a commit on a branch named `agent/*` without at least one `Agent:` and one `Tier:` line. It reads the whole message, because git's own trailer parser skips this footer when `Co-Authored-By:` follows in a later paragraph. The monthly retro reads these trailers next to `events.jsonl` and cross-checks them.
 - This replaces the old `Models:` footer of `t3-build` section 8.

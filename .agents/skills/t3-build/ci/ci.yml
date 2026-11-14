@@ -1,0 +1,49 @@
+name: ci
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [format, lint, types, test, secrets, deps, sast, licence]
+    steps:
+      # Pin to a full commit SHA before the first run (see README.md).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # A missing Makefile or target fails the job (fail closed).
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: make "$TARGET"
+  guard-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m unittest discover -s .github/risk-gate
+          python3 -m unittest discover -s .github/ci
+  ci:
+    needs: [check, guard-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHECK: ${{ needs.check.result }}
+          GUARD_TESTS: ${{ needs.guard-tests.result }}
+        run: |
+          echo "check: $CHECK, guard-tests: $GUARD_TESTS"
+          test "$CHECK" = success
+          test "$GUARD_TESTS" = success
