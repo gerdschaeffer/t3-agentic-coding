@@ -61,10 +61,19 @@ The four templates therefore carry `branches: [main]` under `pull_request:`. Rep
 default branch of the repo in all four files; a repo whose default branch has another name gets no
 run at all until then, which is visible. Add other protected branches to the list on purpose. A pull
 request against a branch that is not in the list starts none of these workflows, so a required check
-stays pending and the pull request cannot merge (fail closed). This closes the variant where anyone
-who can open a pull request uses an old branch as the base.
+stays pending (a result that is missing stays pending; a result that already exists for the same
+head SHA, for example from an earlier pull request, can still count) and the pull request cannot
+merge on the missing result (fail closed). This closes the variant where anyone who can open a pull
+request uses an old branch that was installed with these filtered templates as the base.
 
-What stays: someone who can push a base branch (an agent with push access, for example) can still
+What stays, first: GitHub runs the workflow definitions from the pull request's merge commit. A
+product repo that installed earlier, unfiltered copies and added the filter later still has those
+old definitions on every older branch, so an author can open a pull request on an old branch from
+the unfiltered installation and leave green runs on a head that is later used against `main`. No
+push access is needed for that. Treat the filter as complete only for branches created after it
+was installed, and delete or protect older branches.
+
+What stays, second: someone who can push a base branch (an agent with push access, for example) can still
 push a base whose workflow files differ, and the check runs are shared by SHA. The full fix is a
 repository ruleset with required workflows pinned to a ref, or a gate that verifies where each
 required check run came from (the API field that lists pull requests on a run is not reliable for

@@ -41,3 +41,12 @@ ruleset with required workflows pinned to a ref is the full fix).
 
 A ruleset or gate check; `gate/risk-gate.yml` (`edited` type, branch filter); templating the
 default branch name.
+
+## Review log
+
+Sol security round 1: the filter itself is correct (base-branch semantics, retarget via `edited`, no
+other line needs it, the ancestor check stays useful). Two README overclaims, both fixed (prose only):
+S1 (medium) an older unfiltered installation on an old branch still supplies unfiltered workflow
+definitions (GitHub runs them from the PR merge commit), so the filter is complete only for
+branches created after it was installed; S2 (low) "cannot merge" holds for a missing required result,
+while an existing result for the same head SHA can still count.
