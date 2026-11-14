@@ -1,6 +1,9 @@
-"""Acceptance tests for WP2 tier.py and the skill docs (spec 002-wp2-tier-step, AC1..AC11)."""
+"""Acceptance tests for WP2 tier.py and the skill docs (spec 002-wp2-tier-step, AC1..AC11),
+plus FU3 tier hardening (spec 010-fu3-tier-hardening, AC1..AC4)."""
 
+import contextlib
 import importlib
+import io
 import os
 import re
 import subprocess
@@ -181,7 +184,7 @@ class AC5BadInput(Base):
             ["docs/../AGENTS.md"],
             ["a\\b.md"],
             ["docs/user/a\nb.md"],
-            ["docs/user/café.md"],
+            # docs/user/café.md moved to FU3AC1NonAscii: tiered T2 now (spec 010 AC1).
             [""],
             ["--trigger", "nope", "CHANGELOG.md"],
             ["--policy", "/nonexistent/dir/policy.toml", "CHANGELOG.md"],
@@ -196,7 +199,7 @@ class AC5BadInput(Base):
     def test_ac5_classify_raises_value_error(self):
         t = tier_mod()
         for paths in [[], ["./CHANGELOG.md"], ["/CHANGELOG.md"], ["docs/../AGENTS.md"],
-                      ["a\\b.md"], ["docs/user/a\nb.md"], ["docs/user/café.md"], [""],
+                      ["a\\b.md"], ["docs/user/a\nb.md"], [""],  # café.md: spec 010 AC1
                       ["CHANGELOG.md", "docs/user/"]]:
             with self.subTest(paths=paths):
                 with self.assertRaises(ValueError):
@@ -314,6 +317,183 @@ class AC10CliOutput(Base):
             r = cli("NOTES.md", cwd=tmp)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.splitlines()[0], "T0")
+
+
+# FU3 (spec 010-fu3-tier-hardening). Non-ASCII paths are tiered, not refused, and never below T2;
+# guardrail matching also runs on the NFKC-then-casefold form of the path.
+
+
+def main_in_process(args):
+    """tier.main with captured output, for arguments argv cannot carry (NUL)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = tier_mod().main(args)
+    return code, out.getvalue(), err.getvalue()
+
+
+class FU3AC1NonAscii(Base):
+    PATHS = ["docs/user/café.md", "docs/ü/x.py"]
+
+    def test_fu3_ac1_non_ascii_paths_are_t2(self):
+        t = tier_mod()
+        for p in self.PATHS:
+            with self.subTest(path=p):
+                got, reasons = t.classify([p], POLICY)
+                self.assertEqual(got, "T2")
+                self.assertTrue(any(p in r for r in reasons), reasons)
+                r = cli("--policy", str(POLICY_FILE), p)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                lines = r.stdout.splitlines()
+                self.assertEqual(lines[0], "T2")
+                self.assertTrue(any(p in line for line in lines[1:]), r.stdout)
+
+    def test_fu3_ac1_reason_text(self):
+        # Neither path has a floor of 2, so the T2 comes from the non-ASCII rule alone.
+        t = tier_mod()
+        for p in self.PATHS:
+            with self.subTest(path=p):
+                self.assertIn(f"non-ASCII path: {p}", t.classify([p], POLICY)[1])
+
+    def test_fu3_ac1_never_t0_or_t1_with_exempt_paths(self):
+        t = tier_mod()
+        cases = [
+            ["CHANGELOG.md", "docs/user/café.md"],
+            ["docs/user/café.md", "CHANGELOG.md"],
+            ["docs/user/a.md", "docs/user/café.md", "docs/user/install.md"],
+            ["CHANGELOG.md", "docs/ü/x.py"],
+            ["app/views.py", "docs/user/café.md"],
+            ["README.md", "docs/user/cafe\u0301.md"],  # NFD: combining acute is printable
+            ["CHANGELOG.md", "docs/user/é.md"],
+            ["CHANGELOG.md", "docs/user/日本.md"],
+            ["CHANGELOG.md", "docs/user/\U0001F600.md"],
+        ]
+        for paths in cases:
+            with self.subTest(paths=paths):
+                got = t.classify(paths, POLICY)[0]
+                self.assertEqual(got, "T2")
+                self.assertCliTier(["--policy", str(POLICY_FILE), *paths], "T2")
+
+    def test_fu3_ac1_no_rating_listing_a_non_ascii_name_gives_no_t0(self):
+        pol = self.write_policy(policy_with('[no_rating]\npaths = ["/café.md", "/CHANGELOG.md"]'))
+        t = tier_mod()
+        for paths in (["café.md"], ["CHANGELOG.md", "café.md"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(t.classify(paths, g.load_policy(pol))[0], "T2")
+                self.assertCliTier(["--policy", str(pol), *paths], "T2")
+
+    def test_fu3_ac1_floor_and_triggers_keep_t2(self):
+        t = tier_mod()
+        cases = [
+            (["app/auth/café.py"], []),
+            (["docs/user/session-ü.md"], []),
+            (["docs/user/café.md"], ["schema"]),
+            (["CHANGELOG.md", "docs/user/café.md", "package.json"], []),
+        ]
+        for paths, trig in cases:
+            with self.subTest(paths=paths, trig=trig):
+                self.assertEqual(t.classify(paths, POLICY, trig)[0], "T2")
+                args = ["--policy", str(POLICY_FILE)]
+                for x in trig:
+                    args += ["--trigger", x]
+                self.assertCliTier(args + paths, "T2")
+
+
+class FU3AC2Lookalikes(Base):
+    HUMAN = [
+        "ſtaging/x.md",            # U+017F long s folds to s
+        "STAGING/ü.md",            # case fold plus non-ASCII
+        "staging/ü.md",            # guardrail wins over the non-ASCII floor
+        ".agents/skills/ü/SKILL.md",
+        "ﬆaging/x.md",             # U+FB06 ligature st
+        "ｓtaging/x.md",           # U+FF53 fullwidth s
+        "staging／x.md",           # U+FF0F fullwidth solidus becomes "/"
+        ".ＡＧＥＮＴＳ/x",          # fullwidth, then case fold
+        ".ＣＬＡＵＤＥ/settings.json",
+        "ＣＬＡＵＤＥ.md",
+        "docs/user/AGENTſ.md",
+        ".github/workflows/ü.yml",
+    ]
+
+    def test_fu3_ac2_folded_lookalikes_are_human(self):
+        t = tier_mod()
+        for p in self.HUMAN:
+            with self.subTest(path=p):
+                got, reasons = t.classify([p], POLICY)
+                self.assertEqual(got, "human")
+                self.assertTrue(any(p in r for r in reasons), reasons)
+                self.assertCliTier(["--policy", str(POLICY_FILE), p], "human")
+
+    def test_fu3_ac2_human_wins_over_exempt_and_non_ascii(self):
+        t = tier_mod()
+        for paths in (["CHANGELOG.md", "ſtaging/x.md"], ["docs/user/café.md", "STAGING/ü.md"],
+                      ["docs/user/a.md", ".ＡＧＥＮＴＳ/x"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(t.classify(paths, POLICY)[0], "human")
+                self.assertCliTier(["--policy", str(POLICY_FILE), *paths], "human")
+
+    def test_fu3_ac2_unfolded_lookalikes_are_t2_not_human(self):
+        # No Unicode fold maps these to a guardrail name: ordinary non-ASCII paths (residual).
+        t = tier_mod()
+        # ǎ, Cyrillic е and ѕ, and a combining mark after a guardrail name.
+        for p in [".ǎgents/x", ".agеnts/x", "ѕtaging/x.md", "docs/user/Claude.md\u0301"]:
+            with self.subTest(path=p):
+                got = t.classify([p], POLICY)[0]
+                self.assertEqual(got, "T2")
+                self.assertCliTier(["--policy", str(POLICY_FILE), p], "T2")
+
+
+class FU3AC3StillRefused(Base):
+    CLI = [
+        "docs/../ü.md", "/ü.md", "docs//ü.md", "docs/ü.md/", "a\\ü.md", "./ü.md",
+        "docs/user/\u200bcafé.md", "docs/user/caf\u202eé.md",
+        "staging/\u200bx.md", "AGENTS\u202e.md", "docs/user/\u00a0ü.md", "\ufeffü.md",
+        "docs/user/ü\u2028.md", "docs/user/ü\n.md", "docs/user/ü\t.md",
+        "docs/../ſtaging/x.md", "./ſtaging/x.md", "ſtaging\\x.md", "ſtaging/",
+    ]
+
+    def test_fu3_ac3_cli_refuses(self):
+        for p in self.CLI:
+            with self.subTest(path=p):
+                self.assertCliRefuses(["--policy", str(POLICY_FILE), p])
+                self.assertCliRefuses(["--policy", str(POLICY_FILE), "CHANGELOG.md", p])
+
+    def test_fu3_ac3_classify_raises(self):
+        t = tier_mod()
+        for p in self.CLI + ["ü\x00.md", "staging/ü\x00.md"]:
+            with self.subTest(path=p):
+                with self.assertRaises(ValueError):
+                    t.classify([p], POLICY)
+                with self.assertRaises(ValueError):
+                    t.classify(["docs/user/café.md", p], POLICY)
+
+    def test_fu3_ac3_nul_exits_2_in_process(self):
+        # argv cannot carry NUL, so main() is called directly.
+        for p in ["ü\x00.md", "staging/ü\x00.md"]:
+            with self.subTest(path=p):
+                code, out, err = main_in_process(["--policy", str(POLICY_FILE), p])
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertNotEqual(err.strip(), "")
+
+
+class FU3AC4DashPaths(Base):
+    def test_fu3_ac4_double_dash_path(self):
+        t = tier_mod()
+        self.assertEqual(t.classify(["-x.py"], POLICY)[0], "T2")
+        self.assertEqual(t.classify(["x.py"], POLICY)[0], "T2")
+        for args in (["--", "-x.py"], ["--policy", str(POLICY_FILE), "--", "-x.py"],
+                     ["--", "x.py"], ["--", "CHANGELOG.md", "-x.py"]):
+            with self.subTest(args=args):
+                r = cli(*args)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                lines = r.stdout.splitlines()
+                self.assertEqual(lines[0], "T2")
+                self.assertTrue(any("x.py" in line for line in lines[1:]), r.stdout)
+
+    def test_fu3_ac4_dash_path_without_separator_is_usage_error(self):
+        for args in (["-x.py"], ["CHANGELOG.md", "-x.py"]):
+            with self.subTest(args=args):
+                self.assertCliRefuses(args)
 
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
