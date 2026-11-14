@@ -144,6 +144,15 @@ key (callers such as `tier.py`, which tiers before any diff exists, and unit tes
 changed; `main` maps a missing or null `status` to `unknown`, which counts as changed, so a response
 without the field fails closed.
 
+Two fold rules keep the floor from being dodged by a name (Sol security pass, spec 022). The
+case-folded pass compares paths and patterns after NFKC and `casefold()`, so `docs/ſpecs/x.md`
+(U+017F) is the spec directory on a case-folding checkout and rates like `docs/specs/x.md`; the
+exact pass is unchanged. And `main` lists the head tree: an `added` file whose folded name equals
+another path of the tree (a `tests/test_login.py` next to `tests/test_Login.py`, which replaces it
+on a case-insensitive checkout) gets the status `case collision`, which `existing_changed` rates as a
+changed file. A lookalike that no fold maps (Cyrillic letters) is a different directory on disk and is
+not folded.
+
 Consequence: a PR that adds a spec under `docs/specs/` goes to the review lane. A PR that adds only
 new test files stays at regression 0. To keep new specs in the auto lane, give the
 specs rule `existing_changed = 2` and no `regression` of its own; nothing else changes.

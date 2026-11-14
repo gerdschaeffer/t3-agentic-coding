@@ -15,6 +15,8 @@ import os
 import re
 import subprocess
 import tomllib
+import unicodedata
+from collections import Counter
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
@@ -43,10 +45,16 @@ def matches(path, pattern):
     return fnmatch(path, pattern) or fnmatch("/" + path, pattern)
 
 
+def _fold(s):
+    """NFKC then casefold: ſ, ﬁ and fullwidth letters fold like a case-insensitive filesystem."""
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
 def rate_files(files, policy, fold=False):
     """Deterministic floor from changed paths and diff size: (scores, reasons).
 
-    fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
+    fold compares paths and patterns NFKC-casefolded: a case-insensitive checkout treats
+    claude.md as CLAUDE.md.
     """
     return _score(_found(files, policy, fold))
 
@@ -57,7 +65,7 @@ def floor(files, policy):
 
 
 def _found(files, policy, fold):
-    key = str.lower if fold else (lambda s: s)
+    key = _fold if fold else (lambda s: s)
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
         found.append(("regression", 3, f"{len(files)} files: too large to rate, split the PR"))
@@ -359,7 +367,8 @@ def main():
             "api",
             f"repos/{repo}/git/trees/{sha}?recursive=1",
             "--jq",
-            '{truncated, links: [.tree[] | select(.mode | IN("120000", "160000")) | .path]}',
+            '{truncated, links: [.tree[] | select(.mode | IN("120000", "160000")) | .path],'
+            ' paths: [.tree[].path]}',
         )
     )
     for f in files:
@@ -367,6 +376,12 @@ def main():
             f["link"] = "repo tree too large to check file modes"
         elif f["path"] in tree["links"]:
             f["link"] = "symlink or submodule"
+    # An added file whose folded name matches another tree path replaces it on a case-insensitive
+    # checkout: rate it as a changed existing file.
+    folded = Counter(_fold(p) for p in tree.get("paths", []))
+    for f in files:
+        if f["status"] == "added" and folded[_fold(f["path"])] > 1:
+            f["status"] = "case collision"
     # The one login whose ratings count; must match the workflow filter. Default: the owner of a
     # personal repo (an org owner is not a user, so org repos must set `rater`).
     trusted = [policy.get("rater") or repo.split("/")[0]]
