@@ -21,8 +21,9 @@ through which lane, and reverts cannot be attributed to a lane.
    - `read_git` also returns the PR number of each counted PR commit (`prn`): from
      `Merge pull request #<n>` or from the ` (#<n>)` suffix (spec 018); `None` for other commits.
    - A new section **M6 lane outcomes** after M5. The lane of a PR is the `lane` of the latest
-     `ship` event (file order) with that `pr` number; a PR commit without such an event, or an event
-     without `lane`, is lane `unknown`. Table `| lane | pull requests | reverts | revert rate | result |`,
+     `ship` event in file order that has both that `pr` number and a `lane` (a later ship event without
+     `lane` does not override it; `--since` does not limit this lookup); a PR commit without such an
+     event is lane `unknown`. Only `ship` events count. Table `| lane | pull requests | reverts | revert rate | result |`,
      rows `auto`, `review`, `block`, `unknown` in that order. `pull requests` counts git PR commits
      (after `--since`) per lane. `reverts` counts each `This reverts commit <sha>` line (after
      `--since`) under the lane of the reverted commit's own PR number (the reverted commit's subject
@@ -35,8 +36,9 @@ through which lane, and reverts cannot be attributed to a lane.
    - Proposed changes: rule 8, when the `auto` row has 20 or more pull requests and its revert rate
      is above the `review` revert rate (review PRs 0 counts as rate 0): `tighten the auto lane` with
      the evidence `auto: <r>/<n>, review: <r>/<n>`.
-3. The golden output of spec 008 AC8 gains the M6 section (all rows 0, `keep collecting (n=0)` for
-   `auto` and `review`); no other line of any existing test output changes.
+3. The golden output of spec 008 AC8 gains the M6 section (`auto`, `review`, `block` at 0 with `keep
+   collecting (n=0)` for `auto` and `review`, and `unknown` at 1: the fixture's one PR has no `pr` in its
+   ship event); no other line of any existing test output changes.
 
 ## Files
 

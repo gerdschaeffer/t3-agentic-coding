@@ -471,5 +471,65 @@ class FU2Hardening(Base):
         self.assertRegex(r.stderr, self.CAUSE)
 
 
+class FU12LaneFields(Base):
+    """Spec 019-fu12-lane-metrics, AC1: optional `pr` and `lane` on any event."""
+
+    def assertRejectedNaming(self, field, **over):
+        label = f"{field}={over[field]!r}"
+        r = self.assertRejected(valid(**over), label=label)
+        self.assertRegex(r.stderr, rf"\b{field}\b", label)
+        self.assertNotIn("unknown field", r.stderr, label)  # a known field with a bad value
+
+    def test_fu12_ac1_pr_bounds_are_valid_and_stored_as_integers(self):
+        for v in (1, 10**9):
+            with self.subTest(pr=v):
+                state = self.tmp() / "state"
+                r = self.cli(valid(stage="ship", pr=v), state=state)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+                (line,) = self.lines(state)
+                obj = json.loads(line)
+                self.assertIs(type(obj["pr"]), int)
+                self.assertEqual(obj["pr"], v)
+
+    def test_fu12_ac1_pr_bad_values_exit_2_naming_pr(self):
+        for v in (0, -1, 10**9 + 1, "7", 7.0, True, None):
+            with self.subTest(pr=v):
+                self.assertRejectedNaming("pr", pr=v)
+
+    def test_fu12_ac1_lane_values_are_valid_and_stored(self):
+        for v in ("auto", "review", "block"):
+            with self.subTest(lane=v):
+                state = self.tmp() / "state"
+                r = self.cli(valid(stage="ship", lane=v), state=state)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+                (line,) = self.lines(state)
+                self.assertEqual(json.loads(line)["lane"], v)
+
+    def test_fu12_ac1_lane_bad_values_exit_2_naming_lane(self):
+        for v in ("Auto", "human", "", 1):
+            with self.subTest(lane=v):
+                self.assertRejectedNaming("lane", lane=v)
+
+    def test_fu12_ac1_both_fields_on_any_event_keep_key_order(self):
+        state = self.tmp() / "state"
+        ev = {**full_event(), "pr": 42, "lane": "review"}
+        r = self.cli(ev, state=state)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        (line,) = self.lines(state)
+        self.assertEqual(list(json.loads(line)), list(ev) + ["ts"])
+
+    def test_fu12_ac1_validate_accepts_and_rejects_in_the_module(self):
+        m = log_event_mod()
+        self.assertEqual(m.validate(valid(pr=1, lane="auto")), [])
+        self.assertTrue(any("pr" in p for p in m.validate(valid(pr=0))))
+        self.assertTrue(any("lane" in p for p in m.validate(valid(lane="human"))))
+
+    def test_fu12_ac1_the_4096_byte_limit_still_applies(self):
+        # valid field values only: a huge findings integer makes the encoded line too long
+        big = valid(pr=1, lane="auto", findings={"blocker": 10**4200, "should": 0, "nit": 0, "security": 0})
+        r = self.assertRejected(big, label="line over 4096 bytes with pr and lane")
+        self.assertIn("4096", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
