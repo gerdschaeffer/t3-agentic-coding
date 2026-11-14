@@ -1446,5 +1446,239 @@ class TestSecurityRound3AC32KillFailures(Base):
     def test_reap_timeout_fails_with_exit_2(self):
         bounded_reap_case(self, SCRIPT, "check_trailers_round3_reap", self.LOG)
 
+
+# ---------------------------------------------------------------- security round 4 (spec section 20)
+# Shared with test_diff_guard.py (imported there): handler scope (AC36) and exit code after restore (AC37).
+
+import array  # noqa: E402
+import fcntl  # noqa: E402
+import termios  # noqa: E402
+
+# Loads the script and records whether SIGTERM has its default disposition at these points: before main,
+# at each print() of the module, at each subprocess.Popen (a child is about to start) and after main.
+# The records go to a JSON file; the exit code is main's.
+HANDLER_DRIVER = r"""
+import builtins, importlib.util, json, os, signal, subprocess, sys
+path, record = sys.argv[1:3]
+name = os.path.splitext(os.path.basename(path))[0]
+spec = importlib.util.spec_from_file_location(name, path)
+m = importlib.util.module_from_spec(spec)
+sys.modules[name] = m
+spec.loader.exec_module(m)
+seen = []
+
+
+def default():
+    return signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+
+def recording_print(*a, **k):
+    seen.append(["print", default()])
+    return builtins.print(*a, **k)
+
+
+class Recording(subprocess.Popen):
+    def __init__(self, *a, **k):
+        seen.append(["popen", default()])
+        super().__init__(*a, **k)
+
+
+m.print = recording_print
+subprocess.Popen = Recording
+seen.append(["start", default()])
+try:
+    code = m.main(sys.argv[3:])
+except SystemExit as e:
+    code = e.code
+seen.append(["end", default()])
+with open(record, "w") as f:
+    json.dump(seen, f)
+sys.exit(code)
+"""
+
+
+def handler_scope_case(test, script, args, want_popen=True):
+    """AC36: the flag-setting handler is installed only around a child: SIGTERM is SIG_DFL before main,
+    at every print of the script and after main, and not SIG_DFL while Popen starts git. Returns the
+    exit code."""
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    record = test.tmp / "handler-scope.json"
+    cp = subprocess.run([sys.executable, "-c", HANDLER_DRIVER, str(script), str(record), *map(str, args)],
+                        cwd=str(test.cwd), env=test.env(), capture_output=True, text=True, errors="replace",
+                        timeout=60)
+    test.assertTrue(record.exists(), f"driver wrote no record: exit {cp.returncode}, stderr {cp.stderr[-500:]!r}")
+    seen = json.loads(record.read_text())
+    kinds = [k for k, _ in seen]
+    test.assertEqual(seen[0], ["start", True], "fixture: SIGTERM was not at its default before main")
+    test.assertIn("print", kinds, f"the script printed nothing: {seen}")
+    test.assertEqual([d for k, d in seen if k == "print"], [True] * kinds.count("print"),
+                     f"SIGTERM handler installed while the script prints (no child running): {seen}")
+    test.assertEqual(seen[-1], ["end", True], "SIGTERM handler still installed after main returned")
+    if want_popen:
+        test.assertIn("popen", kinds, f"git was never started: {seen}")
+        test.assertEqual([d for k, d in seen if k == "popen"], [False] * kinds.count("popen"),
+                         f"no SIGTERM handler while git starts (AC30 needs it around the child): {seen}")
+    else:
+        test.assertNotIn("popen", kinds, f"git was started: {seen}")
+    return cp.returncode
+
+
+def pending(fd):
+    """Bytes waiting in a pipe (FIONREAD)."""
+    buf = array.array("i", [0])
+    fcntl.ioctl(fd, termios.FIONREAD, buf)
+    return buf[0]
+
+
+def full_pipe(test, room=1024):
+    """(read fd, write fd, capacity) of a pipe filled to capacity and then drained by `room` bytes, so a
+    writer that sends more than `room` bytes blocks. Nobody reads it afterwards."""
+    r, w = os.pipe()
+    test.addCleanup(os.close, r)
+    test.addCleanup(os.close, w)
+    os.set_blocking(w, False)
+    for size in (65536, 4096, 1):
+        while True:
+            try:
+                os.write(w, b"x" * size)
+            except BlockingIOError:
+                break
+    os.set_blocking(w, True)
+    capacity = pending(r)
+    os.read(r, room)
+    return r, w, capacity
+
+
+def blocked_stdout_case(test, script, args, env=None):
+    """AC36: the script's stdout is a full pipe nobody drains; once the script blocks writing its report,
+    SIGTERM must end it within 3 s (the default action, as no child runs)."""
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    r, w, capacity = full_pipe(test)
+    p = subprocess.Popen([sys.executable, str(script), *map(str, args)], cwd=str(test.cwd), env=env or test.env(),
+                         stdin=subprocess.DEVNULL, stdout=w, stderr=subprocess.DEVNULL)
+    test.addCleanup(lambda: p.poll() is None and (p.kill(), p.wait()))
+    level, end = pending(r), time.monotonic() + 60
+    while pending(r) == level and p.poll() is None and time.monotonic() < end:
+        time.sleep(0.02)
+    test.assertIsNone(p.poll(), f"fixture: the script ended (exit {p.returncode}) before it blocked on stdout")
+    test.assertGreater(pending(r), level, "fixture: the script never started writing its report")
+    last, still = pending(r), time.monotonic()
+    while time.monotonic() - still < 0.5 and p.poll() is None and time.monotonic() < end:  # until blocked
+        time.sleep(0.05)
+        if pending(r) != last:
+            last, still = pending(r), time.monotonic()
+    test.assertIsNone(p.poll(), f"fixture: the script ended (exit {p.returncode}) instead of blocking on stdout")
+    test.assertGreater(last, capacity - 512, "fixture: the script stopped writing before stdout was full")
+    p.send_signal(signal.SIGTERM)
+    try:
+        p.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+    test.assertIsNotNone(p.poll(), "the script still runs 3 s after SIGTERM while blocked writing its report to a "
+                                   "full stdout: the deferring SIGTERM handler is installed outside run_git")
+    test.assertIn(p.returncode, (-signal.SIGTERM, 143), f"exit {p.returncode}")
+
+
+# Loads the script and wraps signal.signal: on the first call that replaces a Python SIGTERM handler by
+# something else (the restore), the process first sends itself SIGTERM, so the flag is set at the moment
+# of restoring. Exit 3 when no restore happened.
+RESTORE_DRIVER = r"""
+import importlib.util, os, signal, sys
+path = sys.argv[1]
+name = os.path.splitext(os.path.basename(path))[0]
+spec = importlib.util.spec_from_file_location(name, path)
+m = importlib.util.module_from_spec(spec)
+sys.modules[name] = m
+spec.loader.exec_module(m)
+real_signal, fired = signal.signal, []
+
+
+def signalling(signum, handler):
+    current = signal.getsignal(signum)
+    if signum == signal.SIGTERM and callable(current) and handler is not current and not fired:
+        fired.append(1)
+        os.kill(os.getpid(), signal.SIGTERM)
+        for _ in range(3):  # a backward jump: the Python handler runs here at the latest
+            pass
+    return real_signal(signum, handler)
+
+
+signal.signal = signalling
+try:
+    code = m.main(sys.argv[2:])
+except SystemExit as e:
+    code = e.code
+if not fired:
+    print("driver: the SIGTERM handler was never restored", file=sys.stderr)
+    code = 3
+sys.exit(code)
+"""
+
+
+def restore_case(test, script, args):
+    """AC37: a SIGTERM that arrives right before the handler is restored, on an otherwise clean run, still
+    makes the script exit 143."""
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    cp = subprocess.run([sys.executable, "-c", RESTORE_DRIVER, str(script), *map(str, args)], cwd=str(test.cwd),
+                        env=test.env(), capture_output=True, text=True, errors="replace", timeout=60)
+    test.assertNotEqual(cp.returncode, 3, cp.stderr)
+    test.assertEqual(cp.returncode, 143, f"a SIGTERM received at the restore was lost: exit {cp.returncode}; "
+                                         f"stdout={cp.stdout!r}; stderr={cp.stderr[-500:]!r}")
+
+
+class TestSecurityRound4AC36HandlerScope(Base):
+    """AC36: main no longer installs the SIGTERM handler; run_git installs it right before Popen and
+    restores the previous one after the reap. Outside run_git SIGTERM has its default effect."""
+
+    def test_clean_range_prints_with_default_sigterm(self):
+        r, base, head, _ = self.branch_repo(GOOD)
+        code = handler_scope_case(self, SCRIPT, ["--branch", "agent/x", "--base", base, "--head", head,
+                                                 "--repo", r.path])
+        self.assertEqual(code, 0)
+
+    def test_failing_range_prints_with_default_sigterm(self):
+        r, base, head, _ = self.branch_repo("No trailers here\n", GOOD)
+        code = handler_scope_case(self, SCRIPT, ["--branch", "agent/x", "--base", base, "--head", head,
+                                                 "--repo", r.path])
+        self.assertEqual(code, 1)
+
+    def test_skipped_branch_never_installs_the_handler(self):
+        code = handler_scope_case(self, SCRIPT, ["--branch", "feature/x", "--base", "main", "--head", "HEAD",
+                                                 "--repo", self.tmp], want_popen=False)
+        self.assertEqual(code, 0)
+
+    def failing_repo(self, n):
+        """main = one commit; agent/x = n commits without Agent:/Tier: lines (built with fast-import)."""
+        r = self.new_repo("many")
+        who = "Fixture <fixture@example.invalid> 1767614400 +0000"
+        out = [f"commit refs/heads/main\nmark :1\ncommitter {who}\ndata 5\nbase\n\n".encode()]
+        for k in range(n):
+            msg = f"no trailers {k}\n".encode()
+            out.append(f"commit refs/heads/agent/x\nmark :{k + 2}\ncommitter {who}\ndata {len(msg)}\n".encode()
+                       + msg + f"from :{k + 1}\n\n".encode())
+        r.git("fast-import", "--quiet", input=b"".join(out))
+        return r
+
+    def test_sigterm_ends_a_script_blocked_on_a_full_stdout(self):
+        # Even MAX_COMMITS failing lines (about 21 KB) stay in Python's stdout buffers until exit, so the
+        # report could only block after main. With PYTHONUNBUFFERED=1 (as CI runners often set) each line
+        # is written at once: 100 lines (about 4 KB) block inside the run on the pre-filled pipe.
+        r = self.failing_repo(100)
+        blocked_stdout_case(self, SCRIPT, ["--branch", "agent/x", "--base", "main", "--head", "agent/x",
+                                           "--repo", r.path], env=self.env(PYTHONUNBUFFERED="1"))
+
+    def test_sigterm_during_run_git_still_cleans_up(self):
+        deferred_sigterm_case(self, SCRIPT, ["--branch", "agent/x", "--base", "main", "--head", "HEAD",
+                                             "--repo", self.tmp])
+
+
+class TestSecurityRound4AC37ExitAfterRestore(Base):
+    """AC37: the exit code is computed after the handler is restored; a SIGTERM at the restore is 143."""
+
+    def test_sigterm_at_restore_on_clean_run_exits_143(self):
+        r, base, head, _ = self.branch_repo(GOOD)
+        restore_case(self, SCRIPT, ["--branch", "agent/x", "--base", head, "--head", head, "--repo", r.path])
+
+
 if __name__ == "__main__":
     unittest.main()

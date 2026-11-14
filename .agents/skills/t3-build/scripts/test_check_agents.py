@@ -1017,5 +1017,93 @@ class TestSecurityRound3AC33PinnedFolders(Base):
         cp = self.swap_case(inside, CLAUDE, "check_agents_round3_swap_match")
         self.problems(cp, rf"{P}claude/agents/alpha\.md: model claude-inside-7 != claude-x-1")
 
+
+# ---------------------------------------------------------------- security round 4 (spec section 20)
+
+import stat  # noqa: E402
+
+# Loads check_agents and hooks os.open: the first time the agent file `target` is opened through a
+# folder descriptor (after the folder scan), the regular file is replaced by a FIFO. With "writer" a
+# thread writes `content_file`'s bytes into the FIFO as soon as a reader opens it; "none" swaps nothing.
+FIFO_DRIVER = r"""
+import importlib.util, os, sys, threading
+path, target, mode, content_file = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("check_agents", path)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+content = open(content_file, "rb").read()
+real_open, state = os.open, {"swapped": False}
+
+
+def write():
+    try:
+        with open(target, "wb") as w:
+            w.write(content)
+    except OSError:
+        pass
+
+
+def hook(p, flags, mode_=0o777, *, dir_fd=None):
+    if mode != "none" and not state["swapped"] and dir_fd is not None and p == os.path.basename(target):
+        state["swapped"] = True
+        os.unlink(target)
+        os.mkfifo(target)
+        if mode == "writer":
+            threading.Thread(target=write, daemon=True).start()
+    return real_open(p, flags, mode_, dir_fd=dir_fd)
+
+
+m.os.open = hook
+code = m.main(sys.argv[5:])
+if mode != "none" and not state["swapped"]:
+    print("driver: the agent file was never opened through its folder descriptor", file=sys.stderr)
+    code = 3
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(code)  # a writer thread may still wait in open()
+"""
+
+
+@unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+class TestSecurityRound4AC35AgentFileNonBlocking(Base):
+    """AC35: every agent file is opened O_RDONLY|O_NOFOLLOW|O_NONBLOCK through the pinned folder fd and
+    must be S_ISREG by fstat before it is read. A regular file that becomes a FIFO after the folder scan
+    gives `<rel path>: not a regular file` (exit 1) and never hangs, with or without a writer."""
+
+    def run_case(self, mode):
+        self.assertTrue(SCRIPT.is_file(), f"script missing: {SCRIPT}")
+        root = self.root()
+        target = root / "claude" / "agents" / "alpha.md"
+        content = self.tmp / "fifo-content"
+        content.write_text(CLAUDE["alpha"])  # valid front matter that matches its row
+        try:
+            cp = subprocess.run([sys.executable, "-c", FIFO_DRIVER, str(SCRIPT), str(target), mode, str(content),
+                                 "--root", str(root), "--models", str(self.models())],
+                                cwd=str(self.cwd), env=self.env(), capture_output=True, text=True, errors="replace",
+                                timeout=5)
+        except subprocess.TimeoutExpired:
+            cp = None
+        if cp is None:
+            self.fail(f"check_agents did not return within 5 s ({mode}): the agent file is opened blocking, "
+                      "so a FIFO that replaced it after the folder scan hangs the check")
+        self.assertNotEqual(cp.returncode, 3, cp.stderr)
+        if mode != "none":
+            self.assertTrue(stat.S_ISFIFO(os.lstat(target).st_mode), "fixture: alpha.md was not replaced by a FIFO")
+        return cp
+
+    def assert_not_regular(self, cp):
+        self.problems(cp, rf"{P}claude/agents/alpha\.md: not a regular file",
+                      extra=(rf"alpha: row in models\.md \(Claude\) has no file in {P}claude/agents/?",))
+
+    def test_fifo_without_writer_does_not_hang(self):
+        self.assert_not_regular(self.run_case("nowriter"))
+
+    def test_fifo_with_writer_of_valid_front_matter_is_rejected(self):
+        self.assert_not_regular(self.run_case("writer"))
+
+    def test_regular_file_still_passes(self):
+        self.clean(self.run_case("none"))
+
+
 if __name__ == "__main__":
     unittest.main()

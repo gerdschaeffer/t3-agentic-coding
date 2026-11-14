@@ -1432,5 +1432,56 @@ class TestSecurityRound3AC32KillFailures(Base):
     def test_reap_timeout_fails_with_exit_2(self):
         bounded_reap_case(self, SCRIPT, "diff_guard_round3_reap", self.DIFF)
 
+
+# ---------------------------------------------------------------- security round 4 (spec section 20)
+
+from test_check_trailers import blocked_stdout_case, handler_scope_case, restore_case  # noqa: E402
+
+
+class TestSecurityRound4AC36HandlerScope(Base):
+    """AC36: main no longer installs the SIGTERM handler; run_git installs it right before Popen and
+    restores the previous one after the reap. Outside run_git SIGTERM has its default effect."""
+
+    def test_clean_run_prints_with_default_sigterm(self):
+        r, base, head = self.pair({"tests/test_a.py": PY}, {"tests/test_a.py": PY, "src/b.py": SRC})
+        code = handler_scope_case(self, SCRIPT, ["--base", base, "--head", head, "--repo", r.path])
+        self.assertEqual(code, 0)
+
+    def test_findings_print_with_default_sigterm(self):
+        r, base, head = self.pair({"tests/test_a.py": PY, "tests/test_b.py": PY}, {})
+        code = handler_scope_case(self, SCRIPT, ["--base", base, "--head", head, "--repo", r.path])
+        self.assertEqual(code, 1)
+
+    def many_deleted_repo(self, n=700):
+        """main = n test files with long names (one shared blob); agent/x deletes them all."""
+        r = self.new_repo("bigreport")
+        who = "Fixture <fixture@example.invalid> 1767614400 +0000"
+        names = [f"tests/test_{k:04d}_{'x' * 170}.py" for k in range(n)]
+        out = [f"blob\nmark :1\ndata {len(PY)}\n{PY}\n".encode(),
+               f"commit refs/heads/main\nmark :2\ncommitter {who}\ndata 5\nmain\n".encode(),
+               *(f"M 100644 :1 {name}\n".encode() for name in names), b"\n",
+               f"commit refs/heads/agent/x\nmark :3\ncommitter {who}\ndata 5\ndrop\nfrom :2\ndeleteall\n\n".encode()]
+        r.git("fast-import", "--quiet", input=b"".join(out))
+        report = sum(len(f"removed test file: {name}\n") for name in names)
+        self.assertGreater(report, 100_000, "fixture: the report is not over 100 KB")
+        self.assertEqual(len(r.git("diff", "--name-only", "main", "agent/x").splitlines()), n)
+        return r
+
+    def test_sigterm_ends_a_script_blocked_on_a_full_stdout(self):
+        r = self.many_deleted_repo()
+        blocked_stdout_case(self, SCRIPT, ["--base", "main", "--head", "agent/x", "--repo", r.path])
+
+    def test_sigterm_during_run_git_still_cleans_up(self):
+        deferred_sigterm_case(self, SCRIPT, ["--base", "main", "--head", "HEAD", "--repo", self.tmp])
+
+
+class TestSecurityRound4AC37ExitAfterRestore(Base):
+    """AC37: the exit code is computed after the handler is restored; a SIGTERM at the restore is 143."""
+
+    def test_sigterm_at_restore_on_clean_run_exits_143(self):
+        r, base, head = self.pair({"tests/test_a.py": PY}, {"tests/test_a.py": PY})
+        restore_case(self, SCRIPT, ["--base", head, "--head", head, "--repo", r.path])
+
+
 if __name__ == "__main__":
     unittest.main()
