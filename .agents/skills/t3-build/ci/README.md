@@ -100,7 +100,7 @@ limited.
   message (git's trailer parser skips the footer paragraph). The lines are self-declared:
   a consistency check, not authentication. Merge commits are skipped.
 - `agents-drift` (`check_agents.py`): model and effort in the agent files equal
-  `references/models.md`.
+  `references/models.md`. An agent file whose extension is not lowercase (`lead.MD`) is a problem.
 - The three guards run the script from the **base commit** (the first parent of the merge commit
   that `pull_request` checks out; the step fails unless the second parent is the PR head), so a PR
   cannot weaken the script that judges it. The workflow file itself is read from the merge commit:
