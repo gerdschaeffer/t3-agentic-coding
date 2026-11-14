@@ -664,6 +664,7 @@ def run_gate(
     head_sha_env=None,
     view_fails=False,
     head=SHA,
+    tree=None,
 ):
     """main() against a fake gh that also answers `pr view --json author` (spec 4.4).
 
@@ -675,6 +676,7 @@ def run_gate(
     head: the real head SHA that `gh pr view` returns (spec 021).
     files: names, or dicts merged over the default file object, e.g. with `status` (spec 022).
     A name alone sends no `status` key.
+    tree: the head tree `--jq` output as a dict, e.g. with `paths` (spec 022 item 6).
     """
     calls, cards, comments = [], [], list(comments)
 
@@ -705,7 +707,7 @@ def run_gate(
                 for p in files
             )
         if args[0] == "api" and "/git/trees/" in args[1]:
-            return json.dumps({"truncated": False, "links": []})
+            return json.dumps(tree or {"truncated": False, "links": []})
         if args[0] == "api" and args[1].endswith("/comments"):
             return "\n".join(json.dumps(c) for c in comments)
         if args[:2] == ("pr", "comment"):
@@ -2153,3 +2155,119 @@ class FU15Docs(unittest.TestCase):
     def test_diff_guard_docstring_says_a_spec_rates_2(self):  # AC8
         self.assertTrue(says_spec_rates_2(ast.get_docstring(diff_guard_module())),
                         "diff_guard.py docstring: a spec change rates 2 in the gate")
+
+
+# Spec 022 items 5 and 6 (Sol security pass round 1): Unicode fold (S2), case collisions (S1).
+
+LONG_S = "ſ"  # ſ, casefolds to "s"
+# (file, exact-pass regression at base): the folded floor must rate each 2.
+FOLD_CASES = (
+    (f(f"docs/{LONG_S}pecs/x/spec.md"), 2),  # also hits */docs/*/spec.md
+    (f(f"docs/runbook{LONG_S}/x.md"), 2),  # also hits */runbook*.md
+    (st(f"te{LONG_S}ts/test_x.py", "modified"), 2),  # also hits */test_*
+    (f(f"docs/{LONG_S}pecs/x.md"), 0),  # only */docs/specs/* after the fold
+    (f(f"docs/runbook{LONG_S}/x.txt"), 0),  # only */runbooks/* after the fold
+    (st(f"te{LONG_S}ts/x.py", "modified"), 1),  # only */tests/* after the fold
+    (f("docs/ｓpecs/x.md"), 0),  # fullwidth s: NFKC maps it to s
+)
+ASCII_UPPER = [f(p) for p in ("DOCS/SPECS/X.MD", "Docs/Runbooks/X.md", "CLAUDE.MD", "README.MD")] + [
+    f(v) for v, _ in FU5_CASE_VARIANTS] + [f(p) for p in NEVER_LOWER] + [
+    st("TESTS/TEST_X.PY", "modified"), st("Tests/X.py", "modified")]
+
+
+def lowered(policy=POLICY):
+    return {**policy, "rule": [{**r, "paths": [p.lower() for p in r["paths"]]} for r in policy["rule"]]}
+
+
+class UnicodeFold(unittest.TestCase):
+    def test_floor_folds_long_s_and_nfkc(self):  # AC9
+        for file, _ in FOLD_CASES:
+            with self.subTest(path=file["path"]):
+                scores, reasons = g.floor([file], POLICY)
+                self.assertEqual(scores["regression"], 2, reasons)
+                self.assertTrue(any(r.startswith(f"regression 2: {file['path']} (") for r in reasons),
+                                reasons)
+
+    def test_folded_reasons_name_the_rule(self):  # AC9
+        for file, why in (
+            (f(f"docs/{LONG_S}pecs/x.md"), SPEC_RULE),
+            (f(f"docs/runbook{LONG_S}/x.txt"), SPEC_RULE),
+            (st(f"te{LONG_S}ts/x.py", "modified"), "changes an existing file: tests"),
+        ):
+            with self.subTest(path=file["path"]):
+                self.assertIn(f"regression 2: {file['path']} ({why})", g.floor([file], POLICY)[1])
+
+    def test_exact_pass_is_unchanged(self):  # AC9, guard: fold=False keeps its meaning
+        for file, regression in FOLD_CASES:
+            with self.subTest(path=file["path"]):
+                self.assertEqual(g.rate_files([file], POLICY, fold=False)[0]["regression"], regression)
+
+    def test_ascii_fold_equals_lower(self):  # AC9, guard: ASCII input rates as before
+        for file in ASCII_UPPER:
+            with self.subTest(path=file["path"]):
+                want = g.rate_files([{**file, "path": file["path"].lower()}], lowered(), fold=False)
+                got = g.rate_files([file], POLICY, fold=True)
+                self.assertEqual(got[0], want[0])
+                self.assertEqual(got[1], [r.replace(file["path"].lower(), file["path"]) for r in want[1]])
+        self.assertEqual(g.floor([f("DOCS/SPECS/X.MD")], POLICY)[0]["regression"], 2)
+        self.assertEqual(g.floor([f("README.MD")], POLICY)[0], {**ZERO, "regression": 1})
+
+
+def tree(*paths, **kw):
+    return {"truncated": False, "links": [], "paths": list(paths), **kw}
+
+
+def added(path):
+    return {"filename": path, "status": "added"}
+
+
+class CaseCollision(unittest.TestCase):
+    def assert_lane(self, files, head_tree, want):
+        r = run_gate(files, [rating()], env=DRY, tree=head_tree)
+        self.assertIsNone(r["exited"])
+        self.assertTrue(r["out"].startswith(want), r["out"])
+        return r["out"]
+
+    def test_tree_call_asks_for_paths(self):  # AC10, spec item 6
+        r = run_gate([added(TEST_FILE)], [rating()], env=DRY)
+        [call] = [a for a in r["calls"] if a[0] == "api" and "/git/trees/" in a[1]]
+        self.assertIn("paths", call[call.index("--jq") + 1])
+
+    def test_added_file_colliding_with_an_existing_one_is_review(self):  # AC10
+        for new, other in (
+            ("tests/test_login.py", "tests/test_Login.py"),
+            ("tests/test_x.py", f"tests/te{LONG_S}t_x.py"),  # Unicode fold collision
+            (f"tests/te{LONG_S}t_x.py", "tests/test_x.py"),
+        ):
+            with self.subTest(added=new, existing=other):
+                out = self.assert_lane([added(new)], tree("README.md", other, new), "review R2")
+                self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
+
+    def test_added_file_without_collision_is_auto(self):  # AC10, guard: own path is no collision
+        self.assert_lane([added("tests/test_new.py")], tree("README.md", "tests/test_new.py"), "auto R0")
+        self.assert_lane([added("tests/test_new.py")], {"truncated": False, "links": []}, "auto R0")
+
+    def test_collision_among_non_added_files_changes_nothing(self):  # AC10
+        clash = tree("tests/test_A.py", "tests/test_a.py", "README.md")
+        old = {"truncated": False, "links": []}
+        for files, want in (
+            ([{"filename": "tests/test_a.py", "status": "modified"}, added("README.md")], "review R2"),
+            ([{"filename": "README.md", "status": "modified"}], "auto R0"),
+        ):
+            with self.subTest(files=[x["filename"] for x in files]):
+                self.assertEqual(self.assert_lane(files, clash, want), self.assert_lane(files, old, want))
+
+    def test_truncated_tree_still_flags_every_file(self):  # AC10, guard: truncated rule stays
+        big = tree("tests/test_new.py", truncated=True)
+        out = self.assert_lane([added("tests/test_new.py")], big, "review R2")
+        self.assertIn("  regression 2: tests/test_new.py (repo tree too large to check file modes)",
+                      out.splitlines())
+
+
+class FoldAndCollisionDocs(unittest.TestCase):
+    @unittest.skipUnless(Path(__file__).with_name("README.md").exists(), "README.md not copied")
+    def test_readme_names_case_collision_and_nfkc(self):  # AC8 (amended)
+        text = Path(__file__).with_name("README.md").read_text()
+        for needle in ("case collision", "NFKC"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
