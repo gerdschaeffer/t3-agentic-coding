@@ -52,3 +52,6 @@ advisory lookups send package names and versions only. No manifest for an ecosys
 - Output: the script's output, unchanged. No score is invented.
 - Tier rule: none. Pass the proposed-changes table to the lead; the human decides. Missing script:
   `blocked`, reported.
+- Rating audit (monthly, part of this check): comparing rating comments with Sol's replies needs
+  T3 thread access, which the maintainer does not have. Report `not run: no thread access` and name
+  [rating-audit](../../t3-build/references/rating-audit.md); the lead or the human runs it.

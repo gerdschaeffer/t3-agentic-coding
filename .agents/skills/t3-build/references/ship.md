@@ -17,6 +17,8 @@ the user's request, and the user merges.
    the one thing this workflow must never do; keep Sol's raw reply in the record.
    Ratings are append-only: never edit or delete one; to withdraw, post a newer
    rating with `verdict: CHANGES`.
+   Write the review's `childThreadId` into the ledger: [rating-audit.md](rating-audit.md) compares
+   each rating comment with Sol's reply in that thread, monthly and before a shadow-mode merge.
    Bring the branch up to date before Sol's final round. If `main` moves after
    the rating, update it (`gh api -X PUT repos/<o>/<r>/pulls/<n>/update-branch`;
    older `gh` has no `pr update-branch`). That is a new head commit: it needs a
