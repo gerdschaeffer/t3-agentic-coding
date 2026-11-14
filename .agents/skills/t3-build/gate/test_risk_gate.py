@@ -2366,9 +2366,10 @@ class CollisionBothKeyings(unittest.TestCase):
         out = self.assert_lane([added(new)], tree(*paths), "review R2")
         self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
 
-    def test_added_ascii_test_stays_auto(self):  # AC12, guard: non-ASCII tree paths flag no ASCII file
+    def test_added_ascii_test_stays_auto(self):  # AC12 as amended by AC13: only an all-ASCII tree
         new = "tests/test_new.py"
-        self.assert_lane([added(new)], tree("README.md", new, "tests/t\u00e9st.py", LOWER_ONLY[1]), "auto R0")
+        self.assert_lane([added(new)], tree("README.md", new, "tests/t\u00e9st.py", LOWER_ONLY[1]), "review R2")
+        self.assert_lane([added(new)], tree("README.md", new, "tests/test_x.py"), "auto R0")
 
     def test_non_ascii_status_only_matters_to_existing_changed(self):  # AC12
         for new, ascii_twin, want in (
@@ -2385,3 +2386,34 @@ class CollisionBothKeyings(unittest.TestCase):
         path = "tests/t\u00e9st.py"
         out = self.assert_lane([{"filename": path, "status": "modified"}], tree("README.md", path), "review R2")
         self.assertIn(f"  regression 2: {path} (changes an existing file: tests)", out.splitlines())
+
+
+class ConservativeNonAscii(unittest.TestCase):
+    assert_lane = CaseCollision.assert_lane  # borrowed, not inherited: the frozen tests run once
+
+    def assert_changed(self, new, head_tree):
+        out = self.assert_lane([added(new)], head_tree, "review R2")
+        self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
+
+    def test_ignorable_alias_of_ascii_test_is_review(self):  # AC13: HFS+ ignores U+200C
+        new, other = "tests/login.test.js", "tests/login‌.test.js"
+        self.assertNotEqual(new.lower(), other.lower(), "fixture: lower() keys differ")
+        self.assertNotEqual(nfkc_fold(new), nfkc_fold(other), "fixture: NFKC-casefold keys differ")
+        self.assert_changed(new, tree("README.md", other, new))
+
+    def test_any_non_ascii_tree_path_flags_added_ascii_test(self):  # AC13, stated cost
+        new = "tests/test_new.py"
+        self.assert_changed(new, tree("README.md", "docs/café.md", new))
+
+    def test_all_ascii_tree_keeps_added_ascii_test_auto(self):  # AC13, guard
+        new = "tests/test_new.py"
+        self.assert_lane([added(new)], tree("README.md", "tests/test_x.py", new), "auto R0")
+
+    def test_ascii_case_variant_is_review(self):  # AC13, guard: as before
+        self.assert_changed("tests/test_login.py", tree("README.md", "tests/test_Login.py", "tests/test_login.py"))
+
+    def test_tree_without_paths_and_truncated_tree_as_before(self):  # AC13, guard
+        new = "tests/test_new.py"
+        self.assert_lane([added(new)], {"truncated": False, "links": []}, "auto R0")
+        out = self.assert_lane([added(new)], tree(new, "docs/café.md", truncated=True), "review R2")
+        self.assertIn(f"  regression 2: {new} (repo tree too large to check file modes)", out.splitlines())
