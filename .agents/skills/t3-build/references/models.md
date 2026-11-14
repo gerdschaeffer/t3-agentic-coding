@@ -15,7 +15,7 @@ The only place that names models (CONCEPT.md section 3). Agent files in `.claude
 | test-author-t2 | Test author T2 | Claude | claude-opus-5-5 | high |
 | implementer | Implementer T1, T2 | Claude | claude-opus-5-5 | medium (high: cross-cutting, security) |
 | implementer-t0 | Implementer T0 | Claude | claude-haiku-5-5 | medium |
-| security-engineer | Threat model, security review, audit | Claude | claude-fable-5-2 | high |
+| security-engineer | Threat model, security review, audit | Claude | claude-opus-5-5 | high |
 | qa | QA, end-to-end | Claude | claude-sonnet-5-5 | medium |
 | code-scout, web-scout | Scouts | Claude | claude-haiku-5-5 | low |
 | docs-writer | Docs | Claude | claude-haiku-5-5 | low |
