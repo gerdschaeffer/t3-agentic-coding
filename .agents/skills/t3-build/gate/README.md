@@ -137,7 +137,14 @@ converted to draft) and on the owner's rating comments. It also runs again when 
 a pull request is changed (a retarget is an `edited` event), so the rating, the lane and the status
 follow the new base and an armed auto-merge is re-evaluated. Editing only the title or the body
 does not start the gate: the job condition lets an `edited` event through only when
-`changes.base.ref.from` is present.
+`changes.base.ref.from` is present (compared with the empty string: `!= null` would fail for a
+branch named `0`).
+
+Warning: a retarget keeps the head SHA, so the old `risk-gate` success stands until the new run
+writes `pending`. If auto-merge is armed and the actor has write access, it can consume that old
+success in the gap (GitHub disarms auto-merge on a retarget only for actors without write access).
+Disable auto-merge before retargeting a pull request. The structural fix (bind the required result to
+the current base and head, or use a new required status context) is not part of this workflow.
 
 ## Setup per repository
 

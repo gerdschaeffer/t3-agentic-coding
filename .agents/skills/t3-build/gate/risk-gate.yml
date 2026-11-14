@@ -22,7 +22,7 @@ jobs:
     # Org repo: replace github.repository_owner with 'your-login', the rater in the policy.
     if: >-
       (github.event_name == 'pull_request_target' &&
-       (github.event.action != 'edited' || github.event.changes.base.ref.from != null)) ||
+       (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) ||
       (github.event.issue.pull_request &&
        github.event.comment.user.login == github.repository_owner &&
        (startsWith(github.event.comment.body, '<!-- risk-rating sha=') ||

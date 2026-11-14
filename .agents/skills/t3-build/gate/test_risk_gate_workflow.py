@@ -1,4 +1,4 @@
-"""Static and behaviour checks of risk-gate.yml (spec 017 FU10, AC1 to AC5).
+"""Static and behaviour checks of risk-gate.yml (spec 017 FU10, AC1 to AC6).
 
 Run from this folder:  python3 -m unittest test_risk_gate_workflow -v
 
@@ -9,8 +9,9 @@ mutation tests that change a copy of the real text and assert the check reports 
 small evaluator for the expression subset the job `if:` uses over payload fixtures, on the `if:`
 text read from the file.
 
-The workflow checks are skipped when risk-gate.yml is not next to this file: a product repo keeps
-the workflow in .github/workflows/, the gate scripts in .github/risk-gate/.
+AC6: the workflow and README checks are skipped only in the product layout, where this file sits in a
+folder named `risk-gate` (.github/risk-gate/; the workflow lives in .github/workflows/). Anywhere else
+(this repository's gate/ folder) a missing risk-gate.yml or README.md is a failure.
 """
 
 import re
@@ -23,19 +24,28 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 WORKFLOW = HERE / "risk-gate.yml"
 README = HERE / "README.md"
-skip_no_workflow = unittest.skipUnless(
-    WORKFLOW.is_file(), "risk-gate.yml is not next to this test (product repo: .github/workflows/); skipped")
+
+
+def product_layout(folder):
+    """AC6: True only in a product repo, where the gate files are copied to .github/risk-gate/."""
+    return folder.name == "risk-gate"
+
+
+skip_no_workflow = unittest.skipIf(
+    product_layout(HERE), "product layout (.github/risk-gate/): workflow and README live elsewhere; skipped")
 
 PR_TYPES = ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft", "edited"]
 COMMENT_TYPES = ["created", "edited", "deleted"]
 RETARGET = ("(github.event_name == 'pull_request_target' && (github.event.action != 'edited' || "
-            "github.event.changes.base.ref.from != null))")
+            "github.event.changes.base.ref.from != ''))")
+# The spec-017 round-0 form: `!= null` coerces a branch named "0" to the number 0 and equals null.
+RETARGET_NULL = RETARGET.replace("from != ''", "from != null")
 ISSUE_CLAUSE = ("(github.event.issue.pull_request && github.event.comment.user.login == github.repository_owner && "
                 "(startsWith(github.event.comment.body, '<!-- risk-rating sha=') || "
                 "startsWith(github.event.changes.body.from || '', '<!-- risk-rating sha=')))")
 WANT_IF = f"{RETARGET} || {ISSUE_CLAUSE}"
 RETARGET_RE = (r"\(\s*github\.event_name\s*==\s*'pull_request_target'\s*&&\s*\(\s*github\.event\.action\s*!=\s*"
-               r"'edited'\s*\|\|\s*github\.event\.changes\.base\.ref\.from\s*!=\s*null\s*\)\s*\)")
+               r"'edited'\s*\|\|\s*github\.event\.changes\.base\.ref\.from\s*!=\s*''\s*\)\s*\)")
 PERMISSIONS = {"contents": "read", "pull-requests": "write", "statuses": "write"}
 GROUP = "risk-gate-${{ github.event.pull_request.number || github.event.issue.number }}"
 RUN = "python3 .github/risk-gate/risk_gate.py"
@@ -200,7 +210,9 @@ def _num(v):
 
 
 def equal(a, b):
-    """GitHub rules: strings compare case-insensitively, other mixed types compare as numbers."""
+    """Actions rules: two strings compare as strings, case-insensitively; otherwise null, booleans and
+    strings coerce to numbers (null 0, false 0, true 1, '' 0, numeric text its value, other text NaN),
+    so null == '' and null == '0'; objects and arrays equal only themselves."""
     if isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
     if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
@@ -340,11 +352,16 @@ def comment(action, login="owner", body=MARK, old=None, on_pr=True):
     return p
 
 
-BASE_CHANGE = {"base": {"ref": {"from": "main"}, "sha": {"from": "b" * 40}}}
+def base_change(ref):
+    return {"base": {"ref": {"from": ref}, "sha": {"from": "b" * 40}}}
+
+
+BASE_CHANGE = base_change("main")
 # (label, event, payload, job starts, condition alone; None = no expectation for the condition alone)
 FIXTURES = [(f"lifecycle:{a}", "pull_request_target", pr(a), True, True)
             for a in ("opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft")] + [
-    ("retarget:base changed", "pull_request_target", pr("edited", BASE_CHANGE), True, True),
+    ("retarget:base changed from main", "pull_request_target", pr("edited", BASE_CHANGE), True, True),
+    ("retarget:base changed from a branch named 0", "pull_request_target", pr("edited", base_change("0")), True, True),
     ("retarget:base changed with title", "pull_request_target",
      pr("edited", {**BASE_CHANGE, "title": {"from": "old"}}), True, True),
     ("edit:title only", "pull_request_target", pr("edited", {"title": {"from": "old"}}), False, False),
@@ -508,6 +525,10 @@ def readme_problems(text):  # AC5
     if not any(re.search(r"(?i)\btitle\b", x) and re.search(r"(?i)\bbody\b", x)
                and re.search(r"(?i)\b(?:not|no|never)\b|n't\b", x) for x in paras):
         p.append("README does not say that title or body edits do not start the gate")
+    if not any(re.search(r"(?i)\bauto-?merge", x) and re.search(r"(?i)\bretarget", x)
+               and re.search(r"(?i)\b(?:disable|turn off|disarm)", x) and re.search(r"(?i)\bbefore\b", x)
+               for x in paras):
+        p.append("README does not warn to disable auto-merge before retargeting a PR")
     return p
 
 
@@ -574,7 +595,28 @@ class TestReader(unittest.TestCase):
 
 
 class TestEvaluator(unittest.TestCase):
-    C = {"github": {"s": "Main", "e": "", "n": None, "o": {"k": "v"}, "t": True}}
+    C = {"github": {"s": "Main", "e": "", "n": None, "o": {"k": "v"}, "t": True, "f": False, "z": "0", "one": "1"}}
+
+    def test_coercion(self):
+        """Actions == / != rules (AC4)."""
+        for src, want in [
+            ("github.z == null", True), ("github.z != null", False), ("github.z != ''", True),
+            ("github.z == '0'", True), ("github.z == '00'", False), ("github.n == ''", True),
+            ("github.n != ''", False), ("github.missing != ''", False), ("github.s != ''", True),
+            ("github.s == null", False), ("github.f == null", True), ("github.f == ''", True),
+            ("github.t == null", False), ("github.t == github.one", True), ("github.f == github.z", True),
+            ("'MAIN' == github.s", True), ("github.o == github.o", True), ("github.o == null", False),
+        ]:
+            with self.subTest(src=src):
+                self.assertEqual(evaluate(src, self.C), want)
+
+    def test_null_form_misses_branch_named_0(self):
+        """Proof the fix matters: the old `!= null` form does not start the gate for a retarget away from `0`."""
+        c = ctx("pull_request_target", pr("edited", base_change("0")))
+        self.assertFalse(truthy(evaluate(RETARGET_NULL, c)))
+        self.assertTrue(truthy(evaluate(RETARGET, c)))
+        main = ctx("pull_request_target", pr("edited", BASE_CHANGE))
+        self.assertTrue(truthy(evaluate(RETARGET_NULL, main)))
 
     def test_operators(self):
         for src, want in [
@@ -625,6 +667,7 @@ class TestAC2Condition(MutationCase):
             ("plain match or'd beside the guard",
              sub(RETARGET_RE, lambda m: m.group(0) + " || github.event_name == 'pull_request_target'")),
             ("guard on title", sub(r"changes\.base\.ref\.from", "changes.title.from")),
+            ("null instead of ''", sub(r"from\s*!=\s*''", "from != null")),
             ("guard on another action", sub(r"action\s*!=\s*'edited'", "action != 'labeled'")),
             ("owner check dropped", sub(r"github\.event\.comment\.user\.login == github\.repository_owner &&", "")),
             ("old-body marker clause dropped", sub(r"github\.event\.changes\.body\.from \|\| ''", "github.event.comment.body")),
@@ -721,26 +764,51 @@ class TestAC4Behaviour(MutationCase):
             ("plain match without the edited guard", sub(RETARGET_RE, "github.event_name == 'pull_request_target'")),
             ("guard on title", sub(r"changes\.base\.ref\.from", "changes.title.from")),
             ("guard && turned into ||", sub(r"'pull_request_target'\s*&&", "'pull_request_target' ||")),
-            ("from != null turned into == null", sub(r"from\s*!=\s*null", "from == null")),
+            ("from != '' turned into == ''", sub(r"from\s*!=\s*''", "from == ''")),
+            ("null instead of ''", sub(r"from\s*!=\s*''", "from != null")),
             ("owner check dropped", sub(r"github\.event\.comment\.user\.login == github\.repository_owner &&", "")),
             ("edited dropped from types", types_list("pull_request_target", lambda xs: [x for x in xs if x != "edited"])),
         ])
 
 
-@unittest.skipUnless(README.is_file(), "README.md is not next to this test (not copied to a product repo)")
+@skip_no_workflow
 class TestAC5Readme(unittest.TestCase):
     def test_readme_states_retarget_rerun(self):
         self.assertEqual(readme_problems(README.read_text()), [])
 
     def test_readme_check_self_test(self):
         good = ("The gate re-runs when a PR is retargeted to another base branch.\n\n"
-                "An `edited` event that only changes the title or body does not start the gate.\n")
+                "An `edited` event that only changes the title or body does not start the gate.\n\n"
+                "A retarget keeps the old success until the new run writes pending, so an armed auto-merge can "
+                "race it: disable auto-merge before you retarget.\n")
+        paras = good.split("\n\n")
         self.assertEqual(readme_problems(good), [])
-        self.assertEqual(len(readme_problems("")), 2)
-        self.assertEqual(len(readme_problems(good.split("\n\n")[0])), 1)
-        self.assertEqual(len(readme_problems(good.split("\n\n")[1])), 1)
-        # both statements must each sit in one paragraph
-        self.assertEqual(len(readme_problems("Retargeted.\n\nIt re-runs.\n\nTitle.\n\nBody, not.\n")), 2)
+        self.assertEqual(len(readme_problems("")), 3)
+        for i in range(3):
+            with self.subTest(only_paragraph=i):
+                self.assertEqual(len(readme_problems(paras[i])), 2)
+        # each statement must sit in one paragraph
+        self.assertEqual(len(readme_problems(
+            "Retargeted.\n\nIt re-runs.\n\nTitle.\n\nBody, not.\n\nAuto-merge.\n\nRetarget.\n\nDisable it before.\n")), 3)
+        for word in ("auto-merge", "retarget", "disable", "before"):
+            with self.subTest(warning_without=word):
+                warning = re.sub(re.escape(word), "x", paras[2], flags=re.I)
+                self.assertEqual(readme_problems("\n\n".join(paras[:2] + [warning])),
+                                 ["README does not warn to disable auto-merge before retargeting a PR"])
+
+
+class TestAC6Layout(unittest.TestCase):
+    def test_skip_decision(self):
+        self.assertTrue(product_layout(Path("/repo/.github/risk-gate")))
+        for folder in ("/repo/.agents/skills/t3-build/gate", "/repo/.github/workflows", "/repo/risk-gate-old",
+                       "/repo/risk-gate/sub", "/repo/Risk-Gate"):
+            with self.subTest(folder=folder):
+                self.assertFalse(product_layout(Path(folder)))
+
+    @skip_no_workflow
+    def test_files_present_outside_product_layout(self):
+        self.assertTrue(WORKFLOW.is_file(), f"{WORKFLOW} missing: not the product layout, so this is a failure")
+        self.assertTrue(README.is_file(), f"{README} missing: not the product layout, so this is a failure")
 
 
 if __name__ == "__main__":
