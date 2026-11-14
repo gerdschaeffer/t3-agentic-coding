@@ -11,7 +11,9 @@ echo '{"slice":"wp4","tier":"T2","stage":"code-review","role":"reviewer","model"
 `ts` is added by the script. `tier` is T0, T1 or T2 only: for a `human` task (guardrail
 file) log the process tier, T1 or T2 as the plan or the user named it, else T2. Required: `slice`, `tier`, `stage`, `role`, `model`, `effort`.
 Optional: `attempt`, `round`, `verdict`, `findings`, `outcome`, `duration` (seconds),
-`tier_raised`, `escalation`, `quota_pause`. Rules per field: `scripts/log_event.py` and
+`tier_raised`, `escalation`, `quota_pause`, `pr` (pull request number, 1 to 10^9) and `lane`
+(`auto`, `review`, `block`). The lead sets `pr` and `lane` on the `ship` event once the gate has
+routed the PR; the retro reports merged PRs and reverts per lane from them. Rules per field: `scripts/log_event.py` and
 `docs/specs/003-wp3-event-log/spec.md`.
 
 - **Stages:** `tier`, `spec`, `spec-review`, `tests`, `implement`, `code-review`,

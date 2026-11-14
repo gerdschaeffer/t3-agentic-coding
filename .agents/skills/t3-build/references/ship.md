@@ -26,6 +26,10 @@ the user's request, and the user merges.
    fix failing CI (counts against the budget).
    In a shadow-mode repo where the leader merges the auto lane, take the lane
    from the dry run of main's gate (gate/README.md), never from the status.
+   Log the `ship` event with `pr` (the pull request number) and `lane` (`auto`,
+   `review` or `block`, as the gate routed it) once the gate has routed the PR:
+   the monthly retro uses them to count merged PRs and reverts per lane
+   ([event-log.md](event-log.md)). Log a new `ship` event if the lane changes.
 4. The leader never merges, never enables auto-merge itself, and never changes
    gate files, policy or branch protection, except in the setup milestone, which
    always lands in the block lane for the user.

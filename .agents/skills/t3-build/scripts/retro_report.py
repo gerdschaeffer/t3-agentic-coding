@@ -30,10 +30,12 @@ SHARE = 0.30          # share for M2 at budget, rule 5 blocked, rule 6 attempts
 ROUND_BUDGET = 3      # rounds (M2, rule 7) and attempts (rule 6) counted as "at budget"
 NO_BLOCKER = 0.90     # rule 7 share of late rounds without blocker
 WEEK_HITS = 3         # rule 4 limit hits in one ISO week
+LANE_MIN = 20         # M6 pull requests per lane before a result
+LANES = ("auto", "review", "block", "unknown")
 
 TS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 REVERT = re.compile(r"^This reverts commit ([0-9a-f]{40})\b", re.M)
-SQUASH = re.compile(r" \(#\d+\)$")  # squash-merge subject suffix
+SQUASH = re.compile(r" \(#(\d+)\)$")  # squash-merge subject suffix
 TIERS = ("T0", "T1", "T2")
 
 
@@ -73,8 +75,9 @@ def log_lines(path):
 
 
 def read_log(path, since):
-    """Return (events sorted by ts, malformed count). Missing file: no events. OSError propagates."""
-    events, bad = [], 0
+    """Return (events sorted by ts, malformed count, {pr: lane}). Missing file: no events. OSError propagates.
+    The lane map holds the lane of the latest ship event in file order per pr, ignoring --since."""
+    events, bad, lanes = [], 0, {}
     for raw in log_lines(path):
         try:
             if raw is None or len(raw) > MAX_LINE:
@@ -93,10 +96,12 @@ def read_log(path, since):
             bad += 1
             continue
         e["ts"] = ts
+        if e["stage"] == "ship" and "pr" in e and "lane" in e:
+            lanes[e["pr"]] = e["lane"]
         if not since or ts[:10] >= since:
             events.append(e)
     events.sort(key=lambda e: e["ts"])  # stable: equal ts keep file order
-    return events, bad
+    return events, bad, lanes
 
 
 def git(path, *args):
@@ -112,7 +117,7 @@ def is_worktree(path):
 
 
 def read_git(path):
-    """All commits on HEAD as dicts (sha, date, subject, agent, tier, reverts) and the first-parent shas.
+    """All commits on HEAD as dicts (sha, date, pr, prn, agent, tier, reverts) and the first-parent shas.
 
     A commit is a merged pull request ("pr") when its subject starts `Merge pull request #` (merge commit),
     or when its subject ends ` (#<n>)` and it is a non-merge commit (at most one parent) on the first-parent
@@ -136,10 +141,13 @@ def read_git(path):
         sha, parents, cdate, subject, body = rec.split("\x1f", 4)
         sha = sha.strip()
         # a non-merge commit (the root has no parent) on the first-parent line
-        squash = bool(SQUASH.search(subject)) and sha in first and len(parents.split()) < 2
+        merge = re.match(r"Merge pull request #(\d+)", subject)
+        sq = SQUASH.search(subject)
+        squash = bool(sq) and sha in first and len(parents.split()) < 2
+        prn = int(merge.group(1)) if merge else int(sq.group(1)) if squash else None
         tier = re.search(r"^Tier: *(\S+)", body, re.M)
         tier = tier.group(1) if tier else ""
-        commits.append({"sha": sha, "date": cdate, "pr": subject.startswith("Merge pull request #") or squash,
+        commits.append({"sha": sha, "date": cdate, "pr": subject.startswith("Merge pull request #") or squash, "prn": prn,
                         "agent": bool(re.search(r"^Agent: ", body, re.M)),
                         "tier": tier if tier in TIERS else "unknown",
                         "has_tier": bool(tier), "reverts": REVERT.findall(body)})
@@ -197,12 +205,32 @@ def m2_result(slices, at):
     return "specs too vague" if at / slices >= SHARE else "keep"
 
 
+def m6(commits, kept, lanes):
+    """{lane: [pull requests, reverts]}; a revert counts under the lane of the reverted commit's own PR."""
+    acc = {k: [0, 0] for k in LANES}
+    prn = {c["sha"]: c["prn"] for c in commits}  # all history: a revert may target an older commit
+    for c in kept:
+        if c["pr"]:
+            acc[lanes.get(c["prn"], "unknown")][0] += 1
+        for sha in c["reverts"]:
+            acc[lanes.get(prn.get(sha), "unknown")][1] += 1
+    return acc
+
+
+def m6_result(lane, n, rate, review_rate):
+    if lane not in ("auto", "review"):
+        return "-"
+    if n < LANE_MIN:
+        return f"keep collecting (n={n})"
+    return "auto lane escapes more than review" if lane == "auto" and rate > review_rate else "keep"
+
+
 def week(ts):
     y, w, _ = date.fromisoformat(ts[:10]).isocalendar()
     return f"{y}-W{w:02d}"
 
 
-def report(a, events, bad, gitdata, ci):
+def report(a, events, bad, lanes, gitdata, ci):
     slices = by_slice(events)
     out = [f"# Retro report {a.repo} {a.today}", "",
            f"Events: {len(events)} (malformed skipped: {bad}). Slices: {len(slices)}.", "",
@@ -277,6 +305,19 @@ def report(a, events, bad, gitdata, ci):
 
     out += ["", "## M5 OpenRouter spend per task", "not recorded in the event log"]
 
+    out += ["", "## M6 lane outcomes"]
+    if gitdata is None:
+        out.append("git: not available")
+    else:
+        acc = m6(commits, kept, lanes)
+        rate = {k: r / n if n else 0 for k, (n, r) in acc.items()}  # review PRs 0 counts as rate 0
+        out += table(["lane", "pull requests", "reverts", "revert rate", "result"],
+                     [[k, n, r, f"{rate[k]:.2f}" if n else "-", m6_result(k, n, rate[k], rate["review"])]
+                      for k, (n, r) in acc.items()])
+        (an, ar), (rn, rr) = acc["auto"], acc["review"]
+        if an >= LANE_MIN and rate["auto"] > rate["review"]:
+            props.append(["M6 lane outcomes", f"auto: {ar}/{an}, review: {rr}/{rn}", "tighten the auto lane"])
+
     gates = [e for e in events if e["stage"] == "human-gate"]
     blocked = sum(e.get("outcome") == "blocked" for e in gates)
     if len(gates) >= MIN_POINTS and blocked / len(gates) >= SHARE:
@@ -335,11 +376,11 @@ def main(argv=None):
 
     root = a.state_dir or os.environ.get("T3_BUILD_STATE") or Path.home() / ".local" / "state" / "t3-build"
     try:
-        events, bad = read_log(Path(root) / a.repo / "events.jsonl", a.since)
+        events, bad, lanes = read_log(Path(root) / a.repo / "events.jsonl", a.since)
     except OSError as e:
         print(f"retro_report.py: cannot read the event log: {e.__class__.__name__}", file=sys.stderr)
         return 1
-    sys.stdout.write(report(a, events, bad, gitdata, ci))
+    sys.stdout.write(report(a, events, bad, lanes, gitdata, ci))
     return 0
 
 
