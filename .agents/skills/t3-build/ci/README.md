@@ -52,12 +52,19 @@ policy, so read those changes too.
 
 ## Known design limit: shared check runs
 
-Check runs are keyed by head SHA and name. Two pull requests with the same head (one against a base
-branch that predates the guards, one against `main`) share them, and the newest run counts, so a
-person who can push a base branch can leave green runs on the head. Fork authors cannot: add
-`branches: [main]` under `pull_request:` in the four workflows to limit this. The full fix is a
-gate or ruleset that checks that each required run belongs to this PR number; it is not part of
-these templates.
+Check runs are keyed by head SHA and name. Two pull requests with the same head SHA share them, and
+the newest run counts. A head that is opened against an old branch that predates the guards gets
+green runs (`guards not installed on the base commit`); the same head against `main` then shows
+those green runs. Without a branch filter anyone who can open a pull request can do this against
+any existing branch that predates the guards, and right after installation that is every other
+branch. This reaches `ci` as well as the three guards, so the auto lane depends on it.
+
+Mitigation, in the product repo's copies (not in the templates here, whose tests forbid a filter):
+add `branches: [main]` under `pull_request:` in the four workflows. After that only someone who can
+push a base branch can do it. The full fix is a repository ruleset with required workflows pinned
+to a ref, or a gate that verifies where each required check run came from (the API field that lists
+pull requests on a run is not reliable for this). Neither is part of these templates. Also note:
+`gate/risk-gate.yml` does not re-run when a pull request is retargeted.
 
 ## Secrets
 

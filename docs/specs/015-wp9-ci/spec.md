@@ -528,3 +528,14 @@ merging, checks that each required check run belongs to this PR number, or a rep
 required workflows pinned to a ref. Noted in `ci/README.md`. The earlier statement "the gate already
 blocks `.github/` changes" does not cover this case, since no `.github/` diff is involved.
 Also escalated, unchanged: F4, F5, `pull_request_target` (F10), Sol's SIGINT and `setsid` residuals.
+
+## 23. Security pass round 3 (security-engineer): result
+
+All of N1, N3 to N9 hold; no regressions (suites: scripts 546, gate 95, ci 65). Three new items, none
+open in code: (1) the README text on shared check runs understated who can exploit it: rewritten
+(lead); (2) `lead.MD` (upper-case extension) satisfies the row's file check: a spec change (report
+any non-lowercase extension) is escalated, nit; (3) the README's `branches: [main]` advice versus
+the template tests that forbid a filter: the README now says the filter goes into the product
+repo's copies, and a README test for that section is escalated, nit. Outside this diff:
+`gate/risk-gate.yml` has no `edited` trigger type, so retargeting does not re-run the gate (to route
+to the gate owner). Security-engineer rounds used: 3 of 5; Sol: 5 of 5.
