@@ -41,4 +41,4 @@ Installed agent files outside the repo; GitHub settings, branch protection, requ
 | Structural fix for a stale `success` after a retarget (publish the result per base and head, new status context) | [017](specs/017-fu10-gate-retarget/spec.md), [020](specs/020-fu13-auto-base/spec.md) |
 | `pull_request_target` for the three guards; spec-change notice; redundant second parent skips the trailer check; SIGINT and `setsid` residuals | [015](specs/015-wp9-ci/spec.md) (review log at the end) |
 | Shared check runs on one head SHA (N2): a repository ruleset with required workflows pinned to a ref, or a gate that checks where each required check run came from | [015](specs/015-wp9-ci/spec.md) section 22, [ci README](../.agents/skills/t3-build/ci/README.md) |
-| Run without a usable event head SHA (`issue_comment`) or an API outage: no status can be written | [021](specs/021-fu14-early-pending/spec.md), gate README |
+| `issue_comment` runs have no event head SHA, so no early `pending` before the first pull request read; an API outage can prevent every status write | [021](specs/021-fu14-early-pending/spec.md), gate README |

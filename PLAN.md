@@ -4,7 +4,7 @@ Turns [CONCEPT.md](CONCEPT.md) into a working team. Sources: section 7 "What is 
 
 ## State now
 
-As of `origin/main` `86fdb09` (pull request 26). WP1 to WP9 and the follow-ups FU1 to FU14 are merged, each reviewed by Sol with tests written first by a separate agent. Open: WP0 (human), WP10 and WP11 (need a product repository and the human). Handover and the human-only list: [docs/HANDOVER.md](docs/HANDOVER.md).
+As of `origin/main` `86fdb09` (pull request 26). WP1 to WP9 and the follow-ups FU1 to FU14 are merged, each reviewed by Sol; where code was written, tests came first from a separate agent (specs 004 to 006 are prose and have none). Open: WP0 (human), WP10 and WP11 (need a product repository and the human). Handover and the human-only list: [docs/HANDOVER.md](docs/HANDOVER.md).
 
 | Done | Where |
 |---|---|
