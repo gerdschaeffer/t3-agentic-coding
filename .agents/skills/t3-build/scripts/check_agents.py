@@ -4,9 +4,9 @@
 Usage: check_agents.py --root DIR [--models FILE]
 
 Folders: for each of claude, codex, opencode, <root>/.<p>/agents or else <root>/<p>/agents.
-Exit 0: every agent file matches its row. Exit 1: drift, a folder inside an agents folder or a singular
-opencode agent folder, or input over a bound. Exit 2: bad arguments, an unreadable or malformed models.md
-(a second row for one provider and agent included), an unknown provider, both folder forms present,
+Exit 0: every agent file matches its row. Exit 1: drift, an agent file extension not in lowercase, a folder
+inside an agents folder or a singular opencode agent folder, or input over a bound. Exit 2: bad arguments,
+an unreadable or malformed models.md (a second row for one provider and agent included), an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
 Reads files only. Symlinks are problems, never followed, --root included. Each agents folder is opened
 once (walked from --root, O_NOFOLLOW) and listed and read only through that descriptor; each agent file is
@@ -299,6 +299,8 @@ def check_folder(folder, fd, rel_folder, rows, problems):
         if not e.is_file(follow_symlinks=False):
             problems.append(f"{plain(rel)}: not a regular file")
             continue
+        if not e.name.endswith(ext):
+            problems.append(f"{plain(rel)}: unexpected extension case")
         present.add(stem)
         checked += check_file(folder, fd, e.name, rel, stem, rows, problems)
     for (f, name), (provider, _, _) in rows.items():

@@ -1957,5 +1957,18 @@ class TestFU15ReadmeSpecRates2(unittest.TestCase):
         )
 
 
+class TestFU16AC4ReadmeExtensionCase(unittest.TestCase):
+    """FU16 AC4: the README says an agent file with a non-lowercase extension is a problem."""
+
+    def test_readme_agents_drift_bullet_names_extension_case(self):
+        bullets = re.split(r"\n(?=- )", README.read_text())
+        self.assertTrue(
+            any(re.match(r"- `agents-drift`", b) and re.search(r"(?i)\bextension\b", b)
+                and re.search(r"(?i)\b(?:non-lowercase|upper[- ]?case|not lowercase)\b", b)
+                and re.search(r"(?i)\bproblem\b", b) for b in bullets),
+            "the agents-drift bullet does not say a non-lowercase extension is a problem",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
