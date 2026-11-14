@@ -50,8 +50,10 @@ Not touched: `gate/` (all files), `tier.py`, `log_event.py`, `retro_report.py`, 
 - Exit 0: pass. Exit 1: a violation, or input over a bound ("too large", fail closed). Exit 2:
   bad arguments, not a git repo, an unresolvable revision, unreadable required input. On exit 2,
   stdout is empty and a message goes to stderr.
-- Git runs as `subprocess.run(["git", "-C", repo, "-c", "core.fsmonitor=false", "-c",
-  "diff.external=", "-c", "core.pager=cat", "--no-pager", <cmd>, ...], shell=False)`. `log` gets
+- Git runs through `subprocess.Popen` (never `run` or `check_output`, so output can be bounded,
+  see Bounds) with the argv `[GIT, "-C", repo, "-c", "core.fsmonitor=false", "-c",
+  "diff.external=", "-c", "core.pager=cat", "--no-pager", <cmd>, ...]` and `shell=False`;
+  `GIT = "git"` is a module constant (tests replace it with a stub executable). `log` gets
   `--no-show-signature`. `diff` gets `--no-ext-diff --no-textconv --no-color`. The environment
   sets `GIT_TERMINAL_PROMPT=0`. With this, a hostile repo config (`gpg.program`,
   `log.showSignature`, `diff.external`, a textconv driver, an fsmonitor hook) cannot run a
@@ -221,7 +223,10 @@ Each template, checked statically by `test_ci_templates.py`:
   `actions/checkout@v4`. The README names the allowlist and tells the human to replace it with
   a full commit SHA. Checkout has `persist-credentials: false`. There is no cache action and no
   `setup-*` action (the runner's `python3` is used).
-- `fetch-depth: 0` in `diff-guard` and `commit-trailers`. The default depth elsewhere.
+- `fetch-depth: 0` in `diff-guard`, `commit-trailers` **and `agents-drift`** (all three verify
+  `BASE_SHA` and `HEAD_SHA` and extract a file from the base commit, so both commits must be in the
+  checkout; a depth-one checkout of the merge commit need not hold them). The default depth in
+  `ci.yml`.
 
 Jobs:
 - `ci.yml`: job `check` with a matrix `target: [format, lint, types, test, secrets, deps, sast,
@@ -305,12 +310,13 @@ built with `git fast-import`.
 | AC13 | Output safety: a file name with `\x1b[31m`, `\n` or 300 characters, and a commit message with control bytes and an `Agent:` lookalike, appear only through `plain()` (no control characters on stdout, values cut at 200). No message text is printed. | tests |
 | AC14 | Source scan of the three scripts: no `shell=True`, `os.system`, `eval(`, `exec(`, `socket`, `urllib`, `http.client`, `requests`. Every `subprocess` call passes a list. | tests |
 | AC15 | Drift: `diff_guard.TEST_PATTERNS` equals the `paths` of the `tests` rule in `gate/risk-policy.toml` (skipped when the policy is not found). | test |
-| AC16 | Templates (section 7): trigger, permissions, no `secrets.`, no `${{` in `run:`, concurrency, timeouts, `uses:` SHA or allowlist, `persist-credentials: false`, `fetch-depth: 0` where named, no fallbacks, YAML subset. Each check fails on a mutated copy of a template (for example with `secrets.X` inserted). | tests |
+| AC16 | Templates (section 7): trigger, permissions, no `secrets.`, no `${{` in `run:`, concurrency, timeouts, `uses:` SHA or allowlist, `persist-credentials: false`, `fetch-depth: 0` in the three guard workflows (named in section 7), no fallbacks, YAML subset. Each check fails on a mutated copy of a template (for example with `secrets.X` inserted). | tests |
 | AC17 | `ci.yml`: exactly the eight matrix targets, `fail-fast: false`, `guard-tests` runs both discover commands, `ci` needs both and checks results under `if: always()`. Every `.github/ci/*` and `.github/risk-gate/*` path named in a template is in the README copy table, and its source file exists. The README names the allowlist entry, the five required checks and the secrets rule. | tests |
 | AC18 | Docs: `references/commit-trailers.md` has the pointer line. Every relative Markdown link in `ci/README.md` resolves. | test, review |
 | AC19 | The three guard templates take `BASE_SHA`/`HEAD_SHA` only from the pull request event fields, verify both commits, then run the script from the base commit through `$RUNNER_TEMP` with the `git ls-tree` present/absent/error branches and the notice text of section 7; none runs `.github/ci/<script>` from the checked-out PR directly in its guard entry steps. A mutated copy that does fails the test. Executable fixture tests (a shell run of the extracted step logic against a temp repo; the step text is pulled from the template) cover: script present (runs, result used), absent (notice, pass), git error or missing base object (fail). | test |
+| AC20 | Bounds are executable: a stub `GIT` executable (a small script written by the test) that (a) writes more than a reduced `MAX_BYTES` without exiting, and (b) sleeps without writing for longer than a reduced `GIT_TIMEOUT`; for each of the three scripts the call returns within a few seconds, the stub process is dead afterwards (no zombie, checked with its pid), and the result is `too large` exit 1 for (a) and `git timed out` exit 2 for (b), with nothing on stdout for exit 2. A stub that writes exactly `MAX_BYTES` passes. | tests |
 
-**Done, local scope:** AC1 to AC19 pass in this repo (script behaviour on fixture repos, static
+**Done, local scope:** AC1 to AC20 pass in this repo (script behaviour on fixture repos, static
 checks of the templates, the base-copy step logic). **PLAN's "done when"** (each job fails on a
 deliberate violation and passes on a clean branch) is only fully met by the product-repo
 demonstration in section 11, with a recorded clean run and a recorded failing run for each of the
@@ -383,5 +389,9 @@ a catalog (WP0, by hand). Semantic test-strength analysis (mutation testing).
 Sol round 1 (CHANGES): findings 2 to 10 are accepted and applied in sections 1, 3 to 10 and AC9, AC6,
 AC19. Finding 1 (the gate files are malformed) is declined with evidence: `risk-policy.toml` parses
 with `tomllib` (`small_diff_lines = 200` under `[limits]`, the gate tests load it) and
-`risk-gate.yml` parses as YAML with the keys `name`, `on`, `permissions`, `jobs`; the review read
+`risk-gate.yml` parses as YAML (Ruby's `YAML.load_file(...).keys` returns `["name", true, "permissions", "jobs"]`; `true` is the key `on`, which YAML 1.1 reads as a boolean); the review read
 them through a lossy view. WP9 does not depend on a repair of those files.
+Sol round 2 (CHANGES, one blocker and two shoulds, finding 1 supported by the bytes): applied:
+`fetch-depth: 0` for all three guard workflows (section 7, AC16), `Popen` with a `GIT` constant
+instead of `subprocess.run` (section 3), and AC20 for the byte bound, the kill and the timeout.
+
