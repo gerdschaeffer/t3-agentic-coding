@@ -1323,5 +1323,161 @@ class TestSecondPassAC44RowsAndDeepToml(Base):
                 self.assertNotIn("RecursionError", cp.stdout + cp.stderr)
 
 
+# ---------------------------------------------------------------- second security pass, round 2 (spec section 22)
+
+class TestSecondPassR2AC48SymlinksAnyName(Base):
+    """AC48 (N5): a symlink inside an agents folder is `not a regular file` (exit 1) whatever its name
+    or target; a symlinked folder named `sub` is no exception. It is never followed."""
+
+    def external(self):
+        ext = self.tmp / "external"
+        ext.mkdir(exist_ok=True)
+        (ext / "evil.md").write_text("---\nname: evil\nmodel: claude-evil-9\neffort: low\n---\n")
+        return ext
+
+    def fresh(self):
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
+        return self.root()
+
+    def assert_link_reported(self, cp, rel):
+        self.problems(cp, rf"{P}{re.escape(rel)}/?: not a regular file")
+        self.assertNotIn("evil", cp.stdout, "the symlink was followed")
+
+    def test_symlinked_folder_named_sub(self):
+        for prov in ("claude", "codex", "opencode"):
+            with self.subTest(provider=prov):
+                r = self.fresh()
+                (r / prov / "agents" / "sub").symlink_to(self.external(), target_is_directory=True)
+                self.assert_link_reported(self.check(r), f"{prov}/agents/sub")
+
+    def test_symlink_named_x_md_to_a_file(self):
+        r = self.root()
+        (r / "claude" / "agents" / "x.md").symlink_to(self.external() / "evil.md")
+        self.assert_link_reported(self.check(r), "claude/agents/x.md")
+
+    def test_symlink_to_a_missing_target(self):
+        for name in ("gone", "gone.md"):
+            with self.subTest(name=name):
+                r = self.fresh()
+                (r / "claude" / "agents" / name).symlink_to(self.tmp / "does-not-exist")
+                self.assert_link_reported(self.check(r), f"claude/agents/{name}")
+
+    def test_symlink_with_another_extension(self):
+        r = self.root()
+        (r / "claude" / "agents" / "notes.txt").symlink_to(self.external() / "evil.md")
+        self.assert_link_reported(self.check(r), "claude/agents/notes.txt")
+
+
+class TestSecondPassR2AC49TomlValueErrorAndUnicodeControls(Base):
+    """AC49 (N6, N7): a Codex TOML file that makes the parser raise ValueError (an integer of 5,000
+    digits) or RecursionError is `unparsable (invalid TOML)`, exit 1, no traceback. The control
+    characters of AC42 also include U+0080 to U+009F, U+2028 and U+2029."""
+
+    CONTROLS = ["\x80", "\x85", "\x9f", " ", " "]
+    FILES = TestSecondPassAC42FrontMatterLines.FILES
+
+    def fresh(self):
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
+        return self.root()
+
+    def test_toml_value_error_and_recursion_error(self):
+        bodies = {"5,000-digit integer": "x = " + "1" * 5000 + "\n",
+                  "5,000-digit integer in a table": "[t]\ny = " + "9" * 5000 + "\n",
+                  "deep arrays (RecursionError)": "x = " + "[" * 30000 + "]" * 30000 + "\n"}
+        for label, body in bodies.items():
+            with self.subTest(case=label):
+                r = self.fresh()
+                f = r / "codex" / "agents" / "rev.toml"
+                f.write_text(CODEX["rev"] + body)
+                self.assertLessEqual(f.stat().st_size, 64 * 1024, "fixture within the 64 KB file limit")
+                cp = self.check(r)
+                self.problems(cp, rf"{P}codex/agents/rev\.toml: unparsable \(invalid TOML\)")
+                self.assertNotIn("Traceback", cp.stderr)
+                self.assertNotIn("Error", cp.stdout + cp.stderr)
+
+    def test_unicode_control_character_in_a_value(self):
+        for c in self.CONTROLS:
+            for prov, rel, anchor in self.FILES:
+                with self.subTest(char=repr(c), provider=prov):
+                    r = self.fresh()
+                    f = r / rel
+                    text = f.read_text()
+                    self.assertIn(anchor, text)
+                    f.write_bytes(text.replace(anchor, anchor[:-4] + c + anchor[-4:], 1).encode())
+                    cp = self.check(r)
+                    self.problems(cp, rf"{P}{re.escape(rel)}: unparsable \(.+\)")
+                    self.assertTrue(printable_only(cp.stdout), repr(cp.stdout))
+
+    def test_line_separator_hides_a_key(self):
+        # `description: x<U+2028>model: evil` may show as two lines in an editor.
+        for c in (" ", "\x85"):
+            with self.subTest(char=repr(c)):
+                r = self.fresh()
+                f = r / "claude" / "agents" / "alpha.md"
+                f.write_bytes(f.read_text().replace("description: Does: things, with colons.\n",
+                                                    f"description: x{c}model: evil\n", 1).encode())
+                self.problems(self.check(r), rf"{P}claude/agents/alpha\.md: unparsable \(.+\)")
+
+    def test_unicode_control_character_in_the_body_passes(self):
+        r = self.root()
+        f = r / "claude" / "agents" / "alpha.md"
+        f.write_bytes((f.read_text() + "Body \x85     \x9f.\n").encode())
+        self.clean(self.check(r))
+
+    @unittest.skipUnless(REAL_STAGING.is_dir() and REAL_MODELS.is_file(), "staging/ or models.md not found")
+    def test_real_staging_still_passes(self):
+        TestSecondPassAC42FrontMatterLines.test_real_staging_still_passes(self)
+
+
+class TestSecondPassR2AC51ExtensionCase(Base):
+    """AC51 (N9): an agent file whose extension is `.md` or `.toml` in any letter case is checked
+    like the lowercase one."""
+
+    def fresh(self):
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
+        return self.root()
+
+    def rename(self, r, rel, new_name):
+        # Remove first: on a case-insensitive file system alpha.md and alpha.MD are one entry.
+        f = r / rel
+        text = f.read_text()
+        f.unlink()
+        (f.parent / new_name).write_text(text)
+        return f.parent / new_name
+
+    def test_drifting_model_with_upper_case_extension(self):
+        cases = (("claude/agents/alpha.md", "alpha.MD", "claude-x-1"),
+                 ("claude/agents/alpha.md", "alpha.Md", "claude-x-1"),
+                 ("opencode/agents/voice.md", "voice.MD", "openrouter/google/gem-4"),
+                 ("codex/agents/rev.toml", "rev.TOML", "gpt-z-1"),
+                 ("codex/agents/rev.toml", "rev.Toml", "gpt-z-1"))
+        for rel, new_name, model in cases:
+            with self.subTest(file=new_name):
+                r = self.fresh()
+                f = self.rename(r, rel, new_name)
+                f.write_text(f.read_text().replace(model, "evil-model-1", 1))
+                folder = rel.rsplit("/", 1)[0]
+                self.problems(self.check(r), rf"{P}{re.escape(folder)}/{re.escape(new_name)}: model "
+                                             rf"evil-model-1 != {re.escape(model)}")
+
+    def test_upper_case_extension_matching_its_row_passes(self):
+        r = self.root()
+        self.rename(r, "claude/agents/alpha.md", "alpha.MD")
+        self.rename(r, "codex/agents/rev.toml", "rev.TOML")
+        self.clean(self.check(r))
+
+    def test_new_upper_case_file_is_checked(self):
+        for rel, body in (("claude/agents/EVIL.MD", "---\nname: EVIL\nmodel: claude-evil-9\neffort: low\n---\n"),
+                          ("codex/agents/X.TOML", 'name = "X"\nmodel = "gpt-evil-9"\nmodel_reasoning_effort = "low"\n')):
+            with self.subTest(file=rel):
+                r = self.fresh()
+                (r / rel).write_text(body)
+                cp = self.check(r)
+                self.assertEqual(cp.returncode, 1, f"stdout={cp.stdout!r} stderr={cp.stderr!r}")
+                self.assertTrue(any(re.fullmatch(rf"{P}{re.escape(rel)}: .+", l) for l in cp.stdout.splitlines()),
+                                f"{rel} not checked: {cp.stdout!r}")
+                self.assertNotIn("files match models.md", cp.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

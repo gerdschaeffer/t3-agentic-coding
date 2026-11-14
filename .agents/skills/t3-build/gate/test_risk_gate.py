@@ -1601,5 +1601,29 @@ class Spec015AC43Makefile(unittest.TestCase):
                 self.assertEqual(floor_lane([f(path)], [rating()])[0], "review")
 
 
+# ---------------------------------------------------------------- spec 015 section 22, AC47 (N4)
+
+MAKE_PATTERNS_ANY_FOLDER = ("*/Makefile*", "*/GNUmakefile*", "*/makefile*")
+
+
+class Spec015AC47MakefilesInAnyFolder(unittest.TestCase):
+    """A Makefile in any folder (and Makefile.inc) is part of the ci.yml trust root: regression 2."""
+
+    def test_root_rule_lists_the_seven_make_patterns(self):
+        rule = next(r for r in POLICY["rule"] if r.get("reason") == ROOT_RULE)
+        for pattern in MAKE_PATTERNS + MAKE_PATTERNS_ANY_FOLDER:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, rule["paths"])
+        self.assertEqual(rule["regression"], 2)
+
+    def test_makefiles_in_any_folder_rate_regression_2(self):
+        for path in ("sub/Makefile", "tools/GNUmakefile", "Makefile.inc", "a/b/makefile", "sub/Makefile.inc"):
+            with self.subTest(path=path):
+                scores, reasons = g.floor([f(path)], POLICY)
+                self.assertEqual(scores["regression"], 2, reasons)
+                self.assertTrue(any(r.startswith("regression 2: ") and ROOT_RULE in r for r in reasons), reasons)
+                self.assertEqual(floor_lane([f(path)], [rating()])[0], "review")
+
+
 if __name__ == "__main__":
     unittest.main()

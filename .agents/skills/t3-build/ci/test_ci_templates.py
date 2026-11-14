@@ -651,6 +651,7 @@ def pr_repo(root, script, on_base):
     git("merge", "-q", "--no-ff", "--no-edit", "pr")
     if git("rev-parse", "HEAD^1") != base or git("rev-parse", "HEAD^2") != head:
         raise AssertionError("fixture: the checkout is not the merge of the PR head into the base tip")
+    git("update-ref", "refs/remotes/origin/main", base)  # AC46: the target branch as the fetch-depth 0 checkout has it
     return ws, base, head, old
 
 
@@ -697,7 +698,8 @@ def guard_case(doc, job_id, name, case, root):
     env.update(STUB_LOG=str(log), STUB_PR_MARKER=str(marker), STUB_EXIT="1" if case == "present-fail" else "0")
     # AC39: the event's base sha is stale in "stale-base" (the branch point) and must be ignored.
     ctx = {BASE_EXPR: old if case == "stale-base" else base,
-           HEAD_EXPR: {"missing-head": MISSING_SHA, "head-mismatch": old}.get(case, head), "github.head_ref": "agent/x"}
+           HEAD_EXPR: {"missing-head": MISSING_SHA, "head-mismatch": old}.get(case, head), "github.head_ref": "agent/x",
+           "github.base_ref": "main"}  # AC46: BASE_REF in the guard step's env:
     ok, out = run_job(doc, job_id, ctx, ws, env, root)
     label = f"{name}/{job_id} [{case}]"
     p = []
@@ -1529,6 +1531,279 @@ class TestSecondPassAC43ReadmeMakefile(unittest.TestCase):
         self.assertEqual(self.problems(ok), [])
         self.assertNotEqual(self.problems(ok.replace("trust root", "entry point")), [])
         self.assertNotEqual(self.problems("The Makefile is the trust root of ci.yml.\n\nThe policy rates it.\n"), [])
+
+
+# ================================================================ second security pass, round 2 (spec section 22)
+
+# AC46: `git merge-base --is-ancestor "$BASE_SHA" "refs/remotes/origin/$BASE_REF"` in a bash if.
+IS_ANCESTOR = re.compile(r"git merge-base --is-ancestor " + _v("BASE_SHA") + r'" "refs/remotes/origin/\$(?:BASE_REF|\{BASE_REF\})"')
+BASE_REF_EXPR = "${{ github.base_ref }}"
+BASE_MSG = "the merge base is not on the target branch"
+# AC50: `git rev-parse --verify -q HEAD^3` (options in any order, HEAD^3 may be quoted).
+OCTOPUS = re.compile(r"""git rev-parse(?: +-[-\w]+)* +["']?HEAD\^3\b""")
+
+
+def guard_step(doc, name):
+    """The one step that runs the base copy of the guard script, or None."""
+    run_copy = re.compile(r"python3 " + _v("RUNNER_TEMP") + "/" + re.escape(GUARDS[name]) + '"')
+    steps = [s for j in jobs_of(doc).values() for s in steps_of(j)
+             if isinstance(s.get("run"), str) and run_copy.search(s["run"])]
+    return steps[0] if len(steps) == 1 else None
+
+
+def check_target_branch(text, name):
+    """AC46 (N3): BASE_REF comes from github.base_ref in the guard step's env: only, and is used only as
+    the quoted ref argument of the is-ancestor check, which runs in a bash if after BASE_SHA is derived
+    and before anything is listed or run from the base, and prints BASE_MSG."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    step = guard_step(doc, name)
+    if step is None:
+        return ["want one guard step that runs the base copy"]
+    defs = [(node is step.get("env"), norm_expr(node["BASE_REF"])) for path, node in walk(doc)
+            if path and path[-1] == "env" and isinstance(node, dict) and "BASE_REF" in node]
+    if defs != [(True, BASE_REF_EXPR)]:
+        p.append(f"BASE_REF definitions {defs!r}: want exactly one, {BASE_REF_EXPR}, in the guard step's env:")
+    run = step["run"]
+    code = "\n".join(l for l in "\n".join(run_texts(doc)).splitlines() if not l.lstrip().startswith("#"))
+    uses = re.findall(r"\bBASE_REF\b", code)
+    if len(uses) != 1:
+        p.append(f"BASE_REF appears {len(uses)} times in run text; want only the is-ancestor argument")
+    m = re.search(r"\bif\s+(?:!\s+)?" + IS_ANCESTOR.pattern, run)
+    if not m:
+        return p + ['guard step missing: if ... git merge-base --is-ancestor "$BASE_SHA" "refs/remotes/origin/$BASE_REF"']
+    if BASE_MSG not in run[m.end():]:
+        p.append(f"no {BASE_MSG!r} after the is-ancestor check")
+    derive = DERIVE_BASE.search(run)
+    listing = re.search("git ls-tree --name-only " + _v("BASE_SHA"), run)
+    if not derive or derive.start() > m.start():
+        p.append("the is-ancestor check does not come after BASE_SHA is derived")
+    if not listing or listing.start() < m.start():
+        p.append("the is-ancestor check does not come before git ls-tree")
+    return p
+
+
+def check_octopus(text, name):
+    """AC50 (N8): the guard step checks for a third parent (git rev-parse --verify -q HEAD^3) before
+    anything is listed or run from the base."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    step = guard_step(doc, name)
+    if step is None:
+        return ["want one guard step that runs the base copy"]
+    run = step["run"]
+    m = OCTOPUS.search(run)
+    if not m:
+        return ["guard step missing: git rev-parse --verify -q HEAD^3"]
+    listing = re.search("git ls-tree --name-only " + _v("BASE_SHA"), run)
+    if not listing or listing.start() < m.start():
+        p.append("the HEAD^3 check does not come before git ls-tree")
+    if MERGE_MSG not in run:
+        p.append(f"no {MERGE_MSG!r} in the guard step")
+    return p
+
+
+R2_PASS = ("present", "origin-ahead")
+R2_CASES = ("present", "origin-ahead", "old-branch-merge", "orphan-merge", "missing-origin", "octopus")
+
+
+def r2_case(doc, job_id, name, case, root):
+    """AC46/AC50 executable cases on top of pr_repo (refs/remotes/origin/main = the base tip):
+    present: the normal merge passes. origin-ahead: the target branch moved on after the merge commit
+    was made (the base is an ancestor, not the tip) and still passes. old-branch-merge / orphan-merge:
+    the checkout merges the head into a commit that is not on the target branch (an old soft branch off
+    an earlier main, or an unrelated root) and fails with BASE_MSG. missing-origin: no origin/main, fails.
+    octopus: HEAD^1 = base, HEAD^2 = head, HEAD^3 = a third parent; fails with MERGE_MSG."""
+    script = GUARDS[name]
+    ws, base, head, old = pr_repo(root, script, on_base=True)
+    genv = git_env(root)
+
+    def git(*a):
+        cp = subprocess.run([REAL_GIT, "-C", str(ws), *a], env=genv, capture_output=True, text=True)
+        if cp.returncode:
+            raise AssertionError(f"fixture git {a}: {cp.stderr}")
+        return cp.stdout.strip()
+
+    base_tree = git("rev-parse", f"{base}^{{tree}}")
+    if case == "origin-ahead":
+        git("update-ref", "refs/remotes/origin/main", git("commit-tree", base_tree, "-p", base, "-m", "main moves on"))
+    elif case in ("old-branch-merge", "orphan-merge"):
+        # The soft base holds the base's guard stub: if the check is missing, that stub runs.
+        soft = git("commit-tree", base_tree, *(("-p", old) if case == "old-branch-merge" else ()), "-m", "soft base")
+        merge = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", soft, "-p", head, "-m", "merge into soft")
+        git("checkout", "-q", "--detach", merge)
+        if git("rev-parse", "HEAD^1") != soft or git("rev-parse", "HEAD^2") != head:
+            raise AssertionError("fixture: not a merge of the head into the soft base")
+    elif case == "missing-origin":
+        git("update-ref", "-d", "refs/remotes/origin/main")
+    elif case == "octopus":
+        extra = git("commit-tree", base_tree, "-p", base, "-m", "third parent")
+        merge = git("commit-tree", git("rev-parse", "HEAD^{tree}"), "-p", base, "-p", head, "-p", extra, "-m", "octopus")
+        git("checkout", "-q", "--detach", merge)
+        if [git("rev-parse", f"HEAD^{i}") for i in (1, 2, 3)] != [base, head, extra]:
+            raise AssertionError("fixture: not an octopus merge")
+    env, bin_, temp = runner_env(root, ws)
+    log, marker = root / "stub.json", root / "pr-ran"
+    env.update(STUB_LOG=str(log), STUB_PR_MARKER=str(marker), STUB_EXIT="0")
+    ctx = {BASE_EXPR: base, HEAD_EXPR: head, "github.head_ref": "agent/x", "github.base_ref": "main"}
+    ok, out = run_job(doc, job_id, ctx, ws, env, root)
+    label = f"{name}/{job_id} [{case}]"
+    p = []
+    if marker.exists():
+        p.append(f"{label}: the PR's own .github/ci/{script} ran")
+    if case in R2_PASS:
+        if not ok:
+            p.append(f"{label}: job failed on a merge into the target branch: {out[-300:]!r}")
+        if not log.exists():
+            p.append(f"{label}: the base commit's script did not run")
+        elif json.loads(log.read_text())["argv"] != want_args(name, base, head):
+            p.append(f"{label}: script arguments {json.loads(log.read_text())['argv']} != {want_args(name, base, head)}")
+        return p
+    if ok:
+        p.append(f"{label}: job passed")
+    if log.exists():
+        p.append(f"{label}: the guard script ran")
+    want = MERGE_MSG if case == "octopus" else BASE_MSG
+    if want not in out:
+        p.append(f"{label}: no {want!r} in the output: {out[-300:]!r}")
+    return p
+
+
+def r2_exec_problems(doc, name, tmp, cases=R2_CASES):
+    script = GUARDS[name]
+    job_ids = [jid for jid, job in jobs_of(doc).items()
+               if any(f".github/ci/{script}" in (s.get("run") or "") for s in steps_of(job) if isinstance(s.get("run"), str))]
+    if not job_ids:
+        return [f"no job runs the guard entry steps for .github/ci/{script}"]
+    p = []
+    for jid in job_ids:
+        for case in cases:
+            root = Path(tempfile.mkdtemp(dir=tmp)).resolve()
+            try:
+                p += r2_case(doc, jid, name, case, root)
+            except Unsupported as e:
+                return [f"{name}/{jid}: unsupported by the step emulator: {e}"]
+    return p
+
+
+class TestSecondPassR2AC45CiTriggerTypes(MutationCase):
+    """AC45 (N1): ci.yml triggers on pull_request with exactly the four types of the guards."""
+
+    def test_static(self):
+        t = read(self, "ci")
+        self.assertEqual(check_trigger_types(t, "ci"), [])
+        self.assertEqual(check_trigger(t, "ci"), [])
+
+    def test_static_mutations(self):
+        self.assert_catches(check_trigger_types, [
+            ("edited dropped", types_drop),
+            ("labeled added", types_add),
+            ("types removed", lambda t, n: del_line(t, r"^\s*types:")),
+            ("branches filter", lambda t, n: sub1(t, r"^(  pull_request:[^\n]*\n)", r"\1    branches: [main]\n")),
+        ], names=("ci",))
+
+
+class TestSecondPassR2AC46TargetBranch(TempCase):
+    """AC46 (N3): the merge base (HEAD^1) must be on refs/remotes/origin/$BASE_REF."""
+
+    def test_static(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(check_target_branch(read(self, n), n), [])
+
+    def test_static_mutations(self):
+        TestAC19GuardSteps.assert_mutations(self, check_target_branch, [
+            ("BASE_REF env dropped", lambda t, n: del_line(t, r"^\s*BASE_REF:")),
+            ("BASE_REF from head_ref", lambda t, n: sub1(t, r"(BASE_REF:\s*)\$\{\{\s*github\.base_ref\s*\}\}",
+                                                         r"\1${{ github.head_ref }}")),
+            ("BASE_REF in another step", lambda t, n: add_step(t, "- env:", "    BASE_REF: ${{ github.base_ref }}",
+                                                               "  run: echo ok")),
+            ("BASE_REF used elsewhere", lambda t, n: sub1(t, r"^( *)(BASE_SHA=\"?\$\([^\n]*\n)",
+                                                          r'\1\2\1echo "$BASE_REF"\n')),
+            ("is-ancestor removed", lambda t, n: sub1(t, IS_ANCESTOR.pattern, "true")),
+            ("unquoted ref", lambda t, n: sub1(t, r'"(refs/remotes/origin/\$\{?BASE_REF\}?)"', r"\1")),
+            ("local branch ref", lambda t, n: sub1(t, r"refs/remotes/origin/(\$\{?BASE_REF\}?)", r"refs/heads/\1")),
+            ("checks HEAD_SHA", lambda t, n: sub1(t, r"(--is-ancestor )" + _v("BASE_SHA") + '"', r'\1"$HEAD_SHA"')),
+            ("message changed", lambda t, n: sub1(t, re.escape(BASE_MSG), "not on main")),
+        ])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(r2_exec_problems(parse(read(self, n)), n, self.tmp,
+                                                  ("present", "origin-ahead", "old-branch-merge", "orphan-merge",
+                                                   "missing-origin")), [])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec_mutations(self):
+        for n in GUARDS:
+            t = read(self, n)
+            muts = [("is-ancestor removed", sub1(t, IS_ANCESTOR.pattern, "true")),
+                    ("compared with itself", sub1(t, r'"refs/remotes/origin/\$\{?BASE_REF\}?"', '"$BASE_SHA"'))]
+            for label, bad in muts:
+                with self.subTest(template=n, mutation=label):
+                    self.assertNotEqual(r2_exec_problems(parse(bad), n, self.tmp, ("old-branch-merge", "missing-origin")), [],
+                                        f"the executable step test missed: {label}")
+
+
+class TestSecondPassR2AC50Octopus(TempCase):
+    """AC50 (N8): an octopus merge (HEAD^3 exists) fails with MERGE_MSG."""
+
+    def test_static(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(check_octopus(read(self, n), n), [])
+
+    def test_static_mutations(self):
+        TestAC19GuardSteps.assert_mutations(self, check_octopus, [
+            ("HEAD^3 check removed", lambda t, n: sub1(t, OCTOPUS.pattern, "true")),
+            ("HEAD^4 instead", lambda t, n: sub1(t, r"HEAD\^3\b", "HEAD^4")),
+        ])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(r2_exec_problems(parse(read(self, n)), n, self.tmp, ("present", "octopus")), [])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec_mutation(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                bad = sub1(read(self, n), r"HEAD\^3\b", "HEAD^4")
+                self.assertNotEqual(r2_exec_problems(parse(bad), n, self.tmp, ("octopus",)), [],
+                                    "the executable step test missed: HEAD^4 instead of HEAD^3")
+
+
+class TestSecondPassR2AC47ReadmeTrustRoot(unittest.TestCase):
+    """AC47 (N4): the README says the trust root is the Makefile and everything it calls, and that a
+    script it runs is rated by the ordinary rules."""
+
+    @staticmethod
+    def problems(text):
+        paras = re.split(r"\n\s*\n", text)
+        if any(re.search(r"\bMakefile\b", s) and re.search(r"(?i)\btrust root\b", s)
+               and re.search(r"(?i)\beverything (?:it|the Makefile) (?:calls|runs)\b", s)
+               and re.search(r"(?i)\bordinary (?:policy )?rules\b", s) for s in paras):
+            return []
+        return ["no README paragraph says the trust root is the Makefile and everything it calls "
+                "(scripts it runs are rated by the ordinary rules)"]
+
+    def test_readme(self):
+        self.assertTrue(README.is_file(), f"README missing: {README}")
+        self.assertEqual(self.problems(README.read_text()), [])
+
+    def test_checker_self_test(self):
+        ok = ("The trust root is the Makefile and everything it calls: a script it runs is rated by the "
+              "ordinary rules, so read those too.\n")
+        self.assertEqual(self.problems(ok), [])
+        self.assertNotEqual(self.problems(ok.replace("everything it calls", "the targets")), [])
+        self.assertNotEqual(self.problems(ok.replace("ordinary rules", "policy")), [])
+        self.assertNotEqual(self.problems("The trust root is the Makefile and everything it calls.\n\n"
+                                          "Scripts follow the ordinary rules.\n"), [])
 
 
 if __name__ == "__main__":
