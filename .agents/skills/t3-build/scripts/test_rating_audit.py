@@ -202,7 +202,7 @@ class AC5Exit2(Base):
         self.usage_error(self.run_args("--bogus"), "unknown flag")
 
     def test_ac5_file_over_256_kib(self):
-        pad = "x" * (MAX_BYTES + 1 - len(reply()))
+        pad = "x" * (MAX_BYTES + 1 - len(reply()) + len("review text"))
         big = reply().replace("review text", pad.replace("x", "y"), 1)
         self.assertGreater(len(big.encode()), MAX_BYTES)
         self.usage_error(self.audit(comment(), big), "big reply")
@@ -266,7 +266,7 @@ class AC6NoEcho(Base):
     def test_ac6_reply_text_is_never_printed(self):
         garbage = "G4RBAGE" + "\x1b[31m\x07\x00\x08" + "Z" * 5000
         rp = f"{garbage}\n{garbage} VERDICT: APPROVE\n" + reply("CHANGES", 2, 1, 1)
-        r = self.audit(comment("APPROVE", 0, 0, 0), rp, raw=True)
+        r = self.audit(comment("APPROVE", 0, 0, 0), rp)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertNotIn("G4RBAGE", r.stdout)
         self.assertNotIn("\x1b", r.stdout)
@@ -278,7 +278,7 @@ class AC6NoEcho(Base):
 
     def test_ac6_comment_text_is_never_printed(self):
         c = comment("APPROVE", 0, 0, 0).replace("reasons: fine", "reasons: C0MMENTTEXT\x1b[0m" + "Q" * 3000)
-        r = self.audit(c, reply("CHANGES", 2, 0, 0), raw=True)
+        r = self.audit(c, reply("CHANGES", 2, 0, 0))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertNotIn("C0MMENTTEXT", r.stdout)
         for ln in r.stdout.splitlines():
