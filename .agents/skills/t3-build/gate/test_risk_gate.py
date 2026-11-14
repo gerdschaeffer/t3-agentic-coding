@@ -659,19 +659,27 @@ def run_gate(
     policy=None,
     base="main",
     default="main",
+    head_sha_env=None,
+    view_fails=False,
+    head=SHA,
 ):
     """main() against a fake gh that also answers `pr view --json author` (spec 4.4).
 
     author: a login, None for a deleted user (`"author": null`), or LOOKUP_FAILS.
     base: the PR's baseRefName, None for null, or NO_KEY (spec 020).
     default: the repository's default branch (raw `--jq` output, newline added), or LOOKUP_FAILS.
+    head_sha_env: HEAD_SHA for main(); None removes it from the environment (spec 021).
+    view_fails: the first `gh pr view` (headRefOid) fails like gh does (spec 021).
+    head: the real head SHA that `gh pr view` returns (spec 021).
     """
     calls, cards, comments = [], [], list(comments)
 
     def fake_gh(*args, check=True):
         calls.append(args)
         if args[:2] == ("pr", "view") and any("headRefOid" in a for a in args):
-            info = {"headRefOid": SHA, "isDraft": False}
+            if view_fails:
+                raise SystemExit("gh pr view failed: HTTP 403")
+            info = {"headRefOid": head, "isDraft": False}
             return json.dumps(info if base is NO_KEY else {**info, "baseRefName": base})
         if args[0] == "api" and ".default_branch" in args:
             if default is LOOKUP_FAILS:
@@ -702,15 +710,22 @@ def run_gate(
 
     policy = {**POLICY, "rater": "owner", "mode": mode, "no_rating": NO_RATING, **(policy or {})}
     out = io.StringIO()
+    exited = None
     with (
         mock.patch.object(g, "gh", fake_gh),
         mock.patch.object(g, "load_policy", return_value=policy),
         mock.patch.dict(os.environ, {"REPO": "owner/repo", "PR": "7", **(env or {})}),
         contextlib.redirect_stdout(out),
-        contextlib.suppress(SystemExit),
     ):
-        g.main()
+        os.environ.pop("HEAD_SHA", None)  # restored by patch.dict
+        if head_sha_env is not None:
+            os.environ["HEAD_SHA"] = head_sha_env
+        try:
+            g.main()
+        except SystemExit as e:
+            exited = e
     return {
+        "exited": exited,
         "calls": calls,
         "statuses": [a for a in calls if a[0] == "api" and "/statuses/" in a[1]],
         "merges": [a for a in calls if a[:2] == ("pr", "merge")],
@@ -1811,3 +1826,136 @@ class AutoBaseDocs(unittest.TestCase):
         text = Path(__file__).with_name("README.md").read_text()
         self.assertIn("auto_base_branches", text)
         self.assertIn("default branch", text)
+
+
+# Spec 021 FU14: pending for the event's head SHA before any fallible read.
+
+HEX = ("0123456789abcdef" * 3)[:40]
+STALE = "c" * 40  # an event SHA that is no longer the real head
+
+
+def status_call(sha, state="pending", description="rating"):
+    return (
+        "api", f"repos/owner/repo/statuses/{sha}",
+        "-f", f"state={state}", "-f", "context=risk-gate", "-f", f"description={description}",
+    )
+
+
+def status_sha(call):
+    return call[1].rsplit("/", 1)[1]
+
+
+# AC2: every value that is not exactly 40 lower-case hex characters is ignored.
+IGNORED_HEAD_SHAS = {
+    "empty": "",
+    "39 characters": HEX[:39],
+    "41 characters": HEX + "0",
+    "upper case": HEX.upper(),
+    "g characters": HEX[:39] + "g",
+    "all g": "g" * 40,
+    "path ../x": "../x",
+    "path, 40 characters": "../" + HEX[:37],
+    "slash, 40 characters": HEX[:20] + "/" + HEX[21:],
+    "0x prefix, 40 characters": "0x" + HEX[:38],
+    "leading space": " " + HEX,
+    "trailing space": HEX + " ",
+    "space inside, 40 characters": HEX[:20] + " " + HEX[21:],
+    "trailing newline": HEX + "\n",
+    "leading newline": "\n" + HEX,
+    "newline inside": HEX + "\nx",
+    "non-ASCII digits": "٠" * 40,
+}
+
+
+class EarlyPending(unittest.TestCase):
+    """Spec 021 AC1: a failing first `gh pr view` still leaves pending for HEAD_SHA."""
+
+    def test_failed_view_with_head_sha_writes_one_pending(self):  # AC1
+        r = run_gate(["README.md"], [rating()], head_sha_env=HEX, view_fails=True)
+        self.assertIsNotNone(r["exited"], "main() must end with SystemExit")
+        self.assertEqual(r["statuses"], [status_call(HEX)])
+        self.assertEqual((r["merges"], r["cards"]), ([], []))
+        self.assertEqual(r["calls"], [status_call(HEX), FIRST_VIEW])
+
+    def test_failed_view_without_head_sha_writes_nothing(self):  # AC1, as before
+        r = run_gate(["README.md"], [rating()], view_fails=True)
+        self.assertIsNotNone(r["exited"])
+        self.assertEqual(r["calls"], [FIRST_VIEW])
+        self.assertEqual((r["statuses"], r["merges"], r["cards"]), ([], [], []))
+
+
+class EarlyPendingIgnored(unittest.TestCase):
+    """Spec 021 AC2: an ignored HEAD_SHA is never written and never reaches a gh argument."""
+
+    def assert_never_used(self, r, value):
+        for needle in {value, value.strip()} - {""}:
+            for call in r["calls"]:
+                for arg in call:
+                    self.assertNotIn(needle, arg, call)
+
+    def test_ignored_values_with_failing_view(self):  # AC2
+        for label, value in IGNORED_HEAD_SHAS.items():
+            with self.subTest(head_sha=label):
+                r = run_gate(["README.md"], [rating()], head_sha_env=value, view_fails=True)
+                self.assertIsNotNone(r["exited"])
+                self.assertEqual(r["calls"], [FIRST_VIEW])
+                self.assertEqual(r["statuses"], [])
+                self.assert_never_used(r, value)
+
+    def test_ignored_values_in_a_normal_run(self):  # AC2
+        for label, value in IGNORED_HEAD_SHAS.items():
+            with self.subTest(head_sha=label):
+                r = run_gate(["README.md"], [rating()], head_sha_env=value)
+                self.assertEqual(r["calls"][0], FIRST_VIEW)
+                self.assertEqual([status_sha(s) for s in r["statuses"]], [SHA, SHA])
+                self.assert_never_used(r, value)
+
+
+class EarlyPendingNormalRun(unittest.TestCase):
+    """Spec 021 AC3: early pending, the existing pending, then the final state."""
+
+    def test_head_sha_equal_to_the_real_head(self):  # AC3
+        r = run_gate(["README.md"], [rating()], head_sha_env=SHA)
+        self.assertIsNone(r["exited"])
+        self.assertEqual(r["calls"][0], status_call(SHA))
+        self.assertEqual(r["statuses"][:2], [status_call(SHA), status_call(SHA)])
+        self.assertEqual(len(r["statuses"]), 3, r["statuses"])
+        self.assertIn("state=success", r["statuses"][2])
+        self.assertEqual(status_sha(r["statuses"][2]), SHA)
+        self.assertIn("--auto", r["merges"][-1])
+
+    def test_stale_head_sha_gets_pending_and_the_real_head_the_result(self):  # AC3
+        r = run_gate(["README.md"], [rating()], head_sha_env=STALE)
+        self.assertEqual(r["calls"][0], status_call(STALE))
+        self.assertEqual(r["statuses"][:2], [status_call(STALE), status_call(SHA)])
+        self.assertEqual(len(r["statuses"]), 3, r["statuses"])
+        self.assertIn("state=success", r["statuses"][2])
+        self.assertEqual(status_sha(r["statuses"][2]), SHA)
+        self.assertEqual([s for s in r["statuses"] if status_sha(s) == STALE], [status_call(STALE)])
+        self.assertTrue(all(STALE not in a for m in r["merges"] for a in m))
+
+    def test_stale_head_sha_on_a_block_lane(self):  # AC3
+        r = run_gate([".github/workflows/x.yml"], [rating()], head_sha_env=STALE)
+        self.assertEqual(r["statuses"][:2], [status_call(STALE), status_call(SHA)])
+        self.assertIn("state=failure", r["statuses"][-1])
+        self.assertEqual(status_sha(r["statuses"][-1]), SHA)
+
+    def test_without_head_sha_as_before(self):  # AC3
+        r = run_gate(["README.md"], [rating()])
+        self.assertEqual(r["calls"][0], FIRST_VIEW)
+        self.assertEqual(len(r["statuses"]), 2, r["statuses"])
+        self.assertEqual(r["statuses"][0], status_call(SHA))
+
+
+class EarlyPendingDryRun(unittest.TestCase):
+    """Spec 021 AC4: the dry run writes nothing, HEAD_SHA or not."""
+
+    def test_dry_run_with_head_sha_writes_nothing(self):  # AC4
+        for sha in (SHA, HEX, STALE):
+            with self.subTest(head_sha=sha):
+                r = run_gate(["README.md"], [rating()], env=DRY, head_sha_env=sha)
+                self.assertEqual((r["statuses"], r["merges"], r["cards"]), ([], [], []))
+                self.assertEqual(r["calls"][0], FIRST_VIEW)
+                self.assertTrue(r["out"].startswith("auto "), r["out"])
+                failed = run_gate(["README.md"], [rating()], env=DRY, head_sha_env=sha, view_fails=True)
+                self.assertEqual(failed["calls"], [FIRST_VIEW])

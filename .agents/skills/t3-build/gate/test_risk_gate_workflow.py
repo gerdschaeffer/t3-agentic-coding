@@ -14,8 +14,13 @@ folder named `risk-gate` (.github/risk-gate/; the workflow lives in .github/work
 (this repository's gate/ folder) a missing risk-gate.yml or README.md is a failure.
 """
 
+import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -470,13 +475,13 @@ def check_checkout(text):  # AC3
     return p
 
 
-def check_run(text):  # AC3
+def check_run(text):  # AC3, superseded by spec 021 AC5: two run: steps, the gate command first
     doc, p = load(text)
     if p:
         return p
     runs = [v for path, v in walk(doc) if path and path[-1] == "run"]
-    if runs != [RUN]:
-        p.append(f"run: steps are {runs!r}, not only {RUN!r}")
+    if len(runs) != 2 or runs[0] != RUN:
+        p.append(f"run: steps are {runs!r}, not exactly two with {RUN!r} first")
     return p
 
 
@@ -809,6 +814,195 @@ class TestAC6Layout(unittest.TestCase):
     def test_files_present_outside_product_layout(self):
         self.assertTrue(WORKFLOW.is_file(), f"{WORKFLOW} missing: not the product layout, so this is a failure")
         self.assertTrue(README.is_file(), f"{README} missing: not the product layout, so this is a failure")
+
+
+# ================================================================ spec 021 FU14 (AC5, AC6, AC7)
+
+HEAD = "${{ github.event.pull_request.head.sha }}"
+FAILURE_ENV = {"GH_TOKEN": "${{ secrets.RISK_GATE_TOKEN }}", "REPO": "${{ github.repository }}", "HEAD_SHA": HEAD}
+FU14_HEX = ("0123456789abcdef" * 3)[:40]
+
+
+def gate_and_rest(doc):
+    """-> (the gate step or None, the steps after it)."""
+    st = steps(doc)
+    gate = [s for s in st if s.get("run") == RUN]
+    return (gate[0], st[st.index(gate[0]) + 1:]) if len(gate) == 1 else (None, [])
+
+
+def check_failure_step(text):  # spec 021 AC5
+    doc, p = load(text)
+    if p:
+        return p
+    gate, rest = gate_and_rest(doc)
+    if gate is None:
+        return [f"not exactly one step runs {RUN!r}"]
+    genv = gate.get("env") if isinstance(gate.get("env"), dict) else {}
+    if genv.get("HEAD_SHA") != HEAD:
+        p.append(f"gate step env HEAD_SHA is {genv.get('HEAD_SHA')!r}, not {HEAD!r}")
+    if len(rest) != 1:
+        return p + [f"{len(rest)} steps after the gate step, not exactly one (the failure step)"]
+    s = rest[0]
+    if norm(s.get("if")) != "failure()":
+        p.append(f"failure step if: is {s.get('if')!r}, not failure()")
+    if s.get("env") != FAILURE_ENV:
+        p.append(f"failure step env is {s.get('env')!r}, not exactly {FAILURE_ENV}")
+    run = s.get("run")
+    if not isinstance(run, str) or not run.strip():
+        p.append("failure step has no run:")
+    elif "${{" in run:
+        p.append("failure step run: holds ${{ (values must come through env:)")
+    return p
+
+
+def fu14_readme_problems(text):  # spec 021 AC7
+    paras = [re.sub(r"\s+", " ", x) for x in re.split(r"\n\s*\n", text)]
+
+    def has(*pats):
+        return any(all(re.search(pat, x) for pat in pats) for x in paras)
+
+    p = []
+    if not has(r"HEAD_SHA", r"(?i)\bpending\b", r"(?i)\bbefore\b"):
+        p.append("README does not say the gate writes pending for HEAD_SHA before its first gh call")
+    if not has(r"failure\(\)", r"(?i)\bpending\b", r"HEAD_SHA"):
+        p.append("README does not describe the if: failure() step that writes pending for HEAD_SHA")
+    if not has(r"issue_comment", r"(?i)head SHA|HEAD_SHA", r"(?i)\b(?:no|not|empty|without|nothing)\b"):
+        p.append("README does not say issue_comment runs have no payload head SHA")
+    if not has(r"(?i)\bAPI\b", r"(?i)\b(?:unavailable|down|outage|unreachable)\b",
+               r"(?i)\b(?:neither|either|no status|cannot|can't)\b"):
+        p.append("README does not say an unavailable GitHub API leaves no status from either mechanism")
+    if not has(r"(?i)\bearly\b|\bbefore\b", r"(?i)\b(?:stays|remains|is left) pending\b",
+               r"(?i)\b(?:intended|by design|on purpose|deliberate)"):
+        p.append("README does not say an early pending can precede a run that stops, and intentionally stays pending")
+    return p
+
+
+def last_step_start(t):
+    """Offset of the last item of the gate job's steps list in the workflow text."""
+    m = re.search(r"(?m)^( *)steps:\n(?:[ ]*#[^\n]*\n)*( *)- ", t)
+    if not m:
+        raise AssertionError("mutation anchor steps: not found in risk-gate.yml")
+    return list(re.finditer(rf"(?m)^{m.group(2)}- ", t))[-1].start()
+
+
+def in_last_step(pattern, repl):
+    """Mutation: substitute once inside the last step only."""
+    def mutate(t):
+        i = last_step_start(t)
+        return t[:i] + sub1(t[i:], pattern, repl)
+    return mutate
+
+
+def extra_step(t):
+    pad = re.search(r"(?m)^( *)steps:\n(?:[ ]*#[^\n]*\n)*( *)- ", t).group(2)
+    return t.rstrip("\n") + f"\n{pad}- uses: actions/cache@v4\n"
+
+
+HEAD_RE = r"HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}"
+
+
+@skip_no_workflow
+class TestFU14AC5FailureStep(MutationCase):
+    def test_failure_step(self):
+        self.assertEqual(check_failure_step(WORKFLOW.read_text()), [])
+
+    def test_failure_step_mutations(self):
+        self.assert_catches(check_failure_step, [
+            ("if: failure() removed", in_last_step(r"if: failure\(\)", "continue-on-error: false")),
+            ("if: always()", in_last_step(r"failure\(\)", "always()")),
+            ("if: success()", in_last_step(r"failure\(\)", "success()")),
+            ("token missing", in_last_step(r"^ *GH_TOKEN:[^\n]*\n", "")),
+            ("token is github.token", in_last_step(r"secrets\.RISK_GATE_TOKEN", "github.token")),
+            ("REPO missing", in_last_step(r"^ *REPO:[^\n]*\n", "")),
+            ("HEAD_SHA missing in the failure step", in_last_step(r"^ *HEAD_SHA:[^\n]*\n", "")),
+            ("${{ in run for HEAD_SHA", in_last_step(r"\$\{?HEAD_SHA\}?", HEAD)),
+            ("${{ in run for REPO", in_last_step(r"\$\{?REPO\}?", "${{ github.repository }}")),
+            ("gate HEAD_SHA from github.sha", sub(HEAD_RE, "HEAD_SHA: ${{ github.sha }}")),
+            ("gate HEAD_SHA from the head ref", sub(HEAD_RE, "HEAD_SHA: ${{ github.event.pull_request.head.ref }}")),
+            ("gate HEAD_SHA dropped", sub(r"^ *HEAD_SHA:[^\n]*\n", "")),
+            ("failure HEAD_SHA from the head ref",
+             in_last_step(HEAD_RE, "HEAD_SHA: ${{ github.event.pull_request.head.ref }}")),
+            ("failure step dropped", lambda t: t[:last_step_start(t)]),
+            ("extra step after it", extra_step),
+        ])
+
+    def test_017_checks_hold_with_the_failure_step(self):
+        text = WORKFLOW.read_text()
+        for check in (check_run, check_expressions, check_secrets, check_permissions, check_concurrency,
+                      check_checkout, check_triggers, check_condition, check_behaviour):
+            with self.subTest(check=check.__name__):
+                self.assertEqual(check(text), [])
+
+
+@skip_no_workflow
+@unittest.skipIf(shutil.which("bash") is None, "bash not installed")
+class TestFU14AC6FailureStepRuns(unittest.TestCase):
+    """The failure step's run: text, read from the real workflow, under bash with a fake gh."""
+
+    def run_step(self, head_sha):
+        _, rest = gate_and_rest(parse(WORKFLOW.read_text()))
+        self.assertEqual(len(rest), 1, "no single step after the gate step")
+        script = rest[0].get("run")
+        self.assertIsInstance(script, str)
+        with tempfile.TemporaryDirectory() as d:
+            log, fake, step = Path(d, "calls"), Path(d, "gh"), Path(d, "step.sh")
+            fake.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                            "with open(os.environ['GH_CALLS'], 'a') as f:\n"
+                            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+            fake.chmod(0o755)
+            step.write_text(script + "\n")
+            env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""), "GH_CALLS": str(log),
+                   "GH_TOKEN": "fake-token", "REPO": "owner/repo", "HEAD_SHA": head_sha}
+            # GitHub's default bash for run: steps on ubuntu runners
+            r = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-eo", "pipefail", str(step)],
+                               env=env, capture_output=True, text=True, timeout=30)
+            calls = [json.loads(ln) for ln in log.read_text().splitlines()] if log.exists() else []
+        return r, calls
+
+    def test_valid_head_sha_writes_one_pending(self):
+        for sha in (FU14_HEX, "a" * 40, "0" * 40):
+            with self.subTest(head_sha=sha):
+                r, calls = self.run_step(sha)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(len(calls), 1, calls)
+                [args] = calls
+                self.assertEqual(args[:7], ["api", f"repos/owner/repo/statuses/{sha}", "-f", "state=pending",
+                                            "-f", "context=risk-gate", "-f"], args)
+                self.assertEqual(len(args), 8, args)
+                self.assertTrue(args[7].startswith("description="), args)
+
+    def test_ignored_head_sha_makes_no_call(self):
+        for label, value in {
+            "empty": "", "39 characters": FU14_HEX[:39], "41 characters": FU14_HEX + "0",
+            "upper case": FU14_HEX.upper(), "g characters": FU14_HEX[:39] + "g", "path ../x": "../x",
+            "path, 40 characters": "../" + FU14_HEX[:37], "trailing newline": FU14_HEX + "\n",
+            "leading newline": "\n" + FU14_HEX, "newline then text": FU14_HEX + "\nx",
+            "text then newline": "x\n" + FU14_HEX, "space inside": FU14_HEX[:20] + " " + FU14_HEX[21:],
+        }.items():
+            with self.subTest(head_sha=label):
+                r, calls = self.run_step(value)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(calls, [])
+
+
+@skip_no_workflow
+class TestFU14AC7Readme(unittest.TestCase):
+    def test_readme_documents_early_pending_and_limits(self):
+        self.assertEqual(fu14_readme_problems(README.read_text()), [])
+
+    def test_readme_check_self_test(self):
+        good = ("Before the first `gh pr view` call the gate writes `pending` for `HEAD_SHA`.\n\n"
+                "A step with `if: failure()` writes `pending` for `HEAD_SHA` when the job fails.\n\n"
+                "`issue_comment` runs have no head SHA in the payload.\n\n"
+                "If the GitHub API itself is unavailable, no status can be written by either mechanism.\n\n"
+                "The early pending can precede a run that stops for another reason; that is intended: "
+                "the status stays pending.\n")
+        self.assertEqual(fu14_readme_problems(good), [])
+        self.assertEqual(len(fu14_readme_problems("")), 5)
+        for i, para in enumerate(good.split("\n\n")):
+            with self.subTest(without_paragraph=i):
+                rest = good.replace(para, "Unrelated.")
+                self.assertGreaterEqual(len(fu14_readme_problems(rest)), 1)
 
 
 if __name__ == "__main__":
