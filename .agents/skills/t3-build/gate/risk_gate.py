@@ -384,9 +384,14 @@ def main():
             f["link"] = "symlink or submodule"
     # An added file whose folded name matches another tree path replaces it on a case-insensitive
     # checkout: rate it as a changed existing file.
-    folded = Counter(_fold(p) for p in tree.get("paths", []))
+    # Two keyings (lower() and NFKC-casefold) and any non-ASCII name: no key lists every alias a
+    # filesystem applies.
+    keys = (str.lower, _fold)
+    seen = [Counter(k(p) for p in tree.get("paths", [])) for k in keys]
     for f in files:
-        if f["status"] == "added" and folded[_fold(f["path"])] > 1:
+        if f["status"] == "added" and (
+            not f["path"].isascii() or any(c[k(f["path"])] > 1 for c, k in zip(seen, keys))
+        ):
             f["status"] = "case collision"
     # The one login whose ratings count; must match the workflow filter. Default: the owner of a
     # personal repo (an org owner is not a user, so org repos must set `rater`).

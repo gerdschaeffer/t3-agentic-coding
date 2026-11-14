@@ -148,9 +148,10 @@ Two fold rules keep the floor from being dodged by a name (Sol security pass, sp
 case-folded pass is the higher of two keyings, `lower()` and NFKC plus `casefold()` (NFKC alone can
 lower a floor: it composes `N` and U+0303 into `Ñ`), so `docs/ſpecs/x.md`
 (U+017F) is the spec directory on a case-folding checkout and rates like `docs/specs/x.md`; the
-exact pass is unchanged. And `main` lists the head tree: an `added` file whose folded name equals
-another path of the tree (a `tests/test_login.py` next to `tests/test_Login.py`, which replaces it
-on a case-insensitive checkout) gets the status `case collision`, which `existing_changed` rates as a
+exact pass is unchanged. And `main` lists the head tree: an `added` file with a non-ASCII name, or
+whose name equals another path of the tree under either keying (`lower()` or NFKC plus
+`casefold()`; a `tests/test_login.py` next to `tests/test_Login.py` replaces it on a case-insensitive
+checkout) gets the status `case collision`, which `existing_changed` rates as a
 changed file. A lookalike that no fold maps (Cyrillic letters) is a different directory on disk and is
 not folded.
 
