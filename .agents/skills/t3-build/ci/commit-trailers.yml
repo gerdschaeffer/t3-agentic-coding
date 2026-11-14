@@ -1,6 +1,7 @@
 name: commit-trailers
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 permissions:
   contents: read
 concurrency:
@@ -18,11 +19,16 @@ jobs:
           fetch-depth: 0
       # Run the guard from the base commit, never the PR's copy (spec 015 section 7).
       - env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GIT_NO_LAZY_FETCH: "1"
           BRANCH: ${{ github.head_ref }}
         run: |
+          # The base is the merge commit's first parent, not the event's base sha (spec 015 AC39).
+          if [ "$(git rev-parse --verify -q HEAD^2)" != "$HEAD_SHA" ]; then
+            echo "checkout is not the merge of the pull request head"
+            exit 1
+          fi
+          BASE_SHA="$(git rev-parse --verify HEAD^1)"
           git cat-file -e "$BASE_SHA^{commit}"
           git cat-file -e "$HEAD_SHA^{commit}"
           listed="$(git ls-tree --name-only "$BASE_SHA" -- .github/ci/check_trailers.py)"

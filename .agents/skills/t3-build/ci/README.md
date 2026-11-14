@@ -41,6 +41,13 @@ run. No other action is used and none may be added without a SHA.
 - Code owners for `.github/` and approval for workflows from fork pull requests.
 - `RISK_GATE_TOKEN` for the gate only (see the gate README).
 
+## The Makefile is the trust root of `ci.yml`
+
+The Makefile is the trust root of `ci.yml`: it runs `make <target>` from the PR, so the Makefile (and any `*.mk`) decides what the eight
+checks do: a PR that turns `test:` into `@true` makes `ci` green. The gate policy rates
+`/Makefile`, `/GNUmakefile`, `/makefile` and `*.mk` as root tool config (regression 2, review
+lane), so such a change is never auto-merged. Keep it that way and read Makefile changes.
+
 ## Secrets
 
 No secrets in these four workflows: they run on `pull_request` with a read-only token and
@@ -62,8 +69,20 @@ limited.
   a consistency check, not authentication. Merge commits are skipped.
 - `agents-drift` (`check_agents.py`): model and effort in the agent files equal
   `references/models.md`.
-- The three guards run the script from the **base commit**, so a PR cannot weaken the script that
-  judges it. The PR that installs them passes with a notice and is merged by hand.
+- The three guards run the script from the **base commit** (the first parent of the merge commit
+  that `pull_request` checks out; the step fails unless the second parent is the PR head), so a PR
+  cannot weaken the script that judges it. The workflow file itself is read from the merge commit:
+  a PR that edits `.github/workflows/*` is held back only by the gate's block lane and code owners
+  (a design limit; running the guards on `pull_request_target` would close it, and the spec chose
+  `pull_request`). The PR that installs the guards passes with a notice and is merged by hand. The
+  workflows also re-run when the base branch of a PR is edited.
+- A spec change in the diff authorizes every removed test or shrinking assertion `diff_guard`
+  finds, and it passes with a plain `notice:` line in a green job: read that line.
+- `diff_guard` knows these test paths only: `*/tests/*`, `*/test/*`, `*/test_*`, `*_test.*`,
+  `*.test.*`, `*.spec.*` (the gate's own list). `__tests__/`, `spec/` and `*_spec.*` are not
+  covered.
+- A commit with two parents counts as a merge and is skipped by `commit-trailers`, so a redundant
+  second parent skips the check.
 
 ## Suggested commands per stack
 

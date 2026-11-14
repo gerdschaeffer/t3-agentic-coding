@@ -48,8 +48,8 @@ TIER_LINE = re.compile(r"^Tier: T[012](\s.*)?$")
 
 
 def plain(value):
-    """One line of plain text: every non-printable character becomes a space; cut at 200."""
-    s = "".join(c if c.isprintable() else " " for c in str(value))
+    """One line of plain text: every non-printable character becomes a space, `##[` becomes `## [`; cut at 200."""
+    s = "".join(c if c.isprintable() else " " for c in str(value)).replace("##[", "## [")  # legacy runner command marker
     return s if len(s) <= 200 else s[:200] + "..."
 
 

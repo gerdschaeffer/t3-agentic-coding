@@ -4,8 +4,9 @@
 Usage: check_agents.py --root DIR [--models FILE]
 
 Folders: for each of claude, codex, opencode, <root>/.<p>/agents or else <root>/<p>/agents.
-Exit 0: every agent file matches its row. Exit 1: drift, or input over a bound. Exit 2: bad
-arguments, an unreadable or malformed models.md, an unknown provider, both folder forms present,
+Exit 0: every agent file matches its row. Exit 1: drift, a folder inside an agents folder or a singular
+opencode agent folder, or input over a bound. Exit 2: bad arguments, an unreadable or malformed models.md
+(a second row for one provider and agent included), an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
 Reads files only. Symlinks are problems, never followed, --root included. Each agents folder is opened
 once (walked from --root, O_NOFOLLOW) and listed and read only through that descriptor; each agent file is
@@ -30,6 +31,7 @@ MAX_AGENT_BYTES = 64 * 1024  # per file
 MAX_MODELS_BYTES = 1_000_000
 FRONT_LINES = 100  # the closing --- must come within this many lines
 HEADER = "| Agent file | Role | Provider | Model | Effort |"
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")  # a top-level front-matter key
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}")
@@ -45,8 +47,8 @@ class Usage(Exception):
 
 
 def plain(value):
-    """One line of plain text: every non-printable character becomes a space; cut at 200."""
-    s = "".join(c if c.isprintable() else " " for c in str(value))
+    """One line of plain text: every non-printable character becomes a space, `##[` becomes `## [`; cut at 200."""
+    s = "".join(c if c.isprintable() else " " for c in str(value)).replace("##[", "## [")  # legacy runner command marker
     return s if len(s) <= 200 else s[:200] + "..."
 
 
@@ -124,22 +126,32 @@ def load_rows(path, root):
             name = name.strip()
             if not NAME.fullmatch(name):
                 raise Usage(f"models file line {n}: bad agent name")
+            if (PROVIDERS[provider], name) in rows:
+                raise Usage(f"models file line {n}: second row for {provider} agent {name}")
             rows[(PROVIDERS[provider], name)] = (provider, model, effort)
     return rows
 
 
 def front_matter(text):
-    """(keys, None) or (None, reason). Top-level `key: value` lines; indented lines are nested values."""
+    """(keys, None) or (None, reason). Top-level `key: value` lines; space-indented lines are nested values,
+    accepted only in the block of a top-level key with an empty value. A control character in any line
+    (a bare CR or a tab included) makes the file unparsable: it can hide a key on a terminal (AC42)."""
     lines = text.split("\n")
     if lines[0].rstrip("\r") != "---":
         return None, "no front matter"
     end = next((i for i in range(1, min(len(lines), FRONT_LINES + 1)) if lines[i].rstrip("\r") == "---"), None)
     if end is None:
         return None, "front matter not closed"
-    keys = {}
+    keys, nested = {}, False
     for line in lines[1:end]:
-        line = line.rstrip("\r")
-        if not line.strip() or line[0] in " \t":
+        line = line.removesuffix("\r")
+        if CONTROL.search(line):
+            return None, "control character"
+        if not line.strip():
+            continue
+        if line[0] == " ":
+            if not nested:
+                return None, "indented line without a parent key"
             continue
         key, sep, value = line.partition(":")
         if not sep:
@@ -149,6 +161,7 @@ def front_matter(text):
         if key in keys:
             return None, "duplicate key"
         keys[key] = value.strip()
+        nested = not keys[key]
     return keys, None
 
 
@@ -161,7 +174,7 @@ def parse(folder, data):
         return front_matter(text)
     try:
         return tomllib.loads(text), None
-    except tomllib.TOMLDecodeError:
+    except (tomllib.TOMLDecodeError, RecursionError):  # deep nesting overflows the parser's stack (AC44)
         return None, "invalid TOML"
 
 
@@ -238,6 +251,9 @@ def check(root, rows):
         root_fd = os.open(root, DIR_FLAGS)
     except OSError:
         raise Usage("cannot read --root")
+    for d in (".opencode", "opencode"):  # OpenCode also loads a singular agent folder (AC41)
+        if os.path.isdir(root / d / "agent"):
+            problems.append(f"{d}/agent: unexpected folder (use agents)")
     try:
         for folder, d in found.items():
             rel_folder = f"{d}/agents"
@@ -263,7 +279,7 @@ def check_folder(folder, fd, rel_folder, rows, problems):
     try:
         with os.scandir(fd) as it:
             for e in it:
-                if e.name.endswith(ext) and not e.is_dir(follow_symlinks=False):
+                if e.name.endswith(ext) or e.is_dir(follow_symlinks=False):
                     entries.append(e)
                     if len(entries) > MAX_AGENT_FILES:
                         break
@@ -275,6 +291,9 @@ def check_folder(folder, fd, rel_folder, rows, problems):
     present = set()
     for e in sorted(entries, key=lambda e: e.name):
         rel, stem = f"{rel_folder}/{e.name}", e.name[:-len(ext)]
+        if e.is_dir(follow_symlinks=False):  # never read (AC41)
+            problems.append(f"{plain(rel)}: unexpected folder")
+            continue
         if not e.is_file(follow_symlinks=False):
             problems.append(f"{plain(rel)}: not a regular file")
             continue

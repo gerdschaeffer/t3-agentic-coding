@@ -3,12 +3,14 @@
 
 Usage: diff_guard.py --base REV --head REV [--repo DIR] [--spec PATTERN]...
 
-The diff runs from `git merge-base BASE HEAD` to HEAD. Findings: (a) a test file deleted, or renamed
+The diff runs from `git merge-base --all BASE HEAD` to HEAD; more than one merge base fails
+(`multiple merge bases: cannot compare`, exit 1). Findings: (a) a test file deleted, or renamed
 to a non-test name; (a2) a test file that changes type (status T, a symlink or gitlink on a test
 path, a text test file that becomes binary); (b) a test file whose removed assertion lines outnumber
 its added ones. Any added, modified or renamed spec file turns the findings into a notice (exit 0).
-Exit 0: pass. Exit 1: a finding, or input over a bound. Exit 2: bad arguments, not a repository, an
-unknown revision, or a git timeout (stdout empty, message on stderr).
+Exit 0: pass. Exit 1: a finding, more than one merge base, or input over a bound. Exit 2: bad
+arguments, not a repository, an unknown revision, no merge base, or a git timeout (stdout empty,
+message on stderr).
 
 Limits: this is a heuristic, not proof. False positives: an assertion moved to another file, a test
 file renamed to a non-test name, a removed fixture under tests/, an assertion rewritten into a
@@ -66,8 +68,8 @@ REGULAR_MODES = ("100644", "100755")
 
 
 def plain(value):
-    """One line of plain text: every non-printable character becomes a space; cut at 200."""
-    s = "".join(c if c.isprintable() else " " for c in str(value))
+    """One line of plain text: every non-printable character becomes a space, `##[` becomes `## [`; cut at 200."""
+    s = "".join(c if c.isprintable() else " " for c in str(value)).replace("##[", "## [")  # legacy runner command marker
     return s if len(s) <= 200 else s[:200] + "..."
 
 
@@ -246,10 +248,13 @@ def main(argv=None):
     def is_test(path):
         return not is_spec(path) and any_match(path, TEST_PATTERNS)
 
-    mb = run_git(["merge-base", args.base, head], repo).strip()
-    if not SHA.fullmatch(mb):
+    bases = run_git(["merge-base", "--all", args.base, head], repo).split()
+    if not all(SHA.fullmatch(b) for b in bases) or not bases:
         die("unexpected git merge-base output")
-    mb = mb.decode()
+    if len(bases) > 1:  # criss-cross history: a diff from either base can hide a deleted test (AC38)
+        print("multiple merge bases: cannot compare")
+        return 1
+    mb = bases[0].decode()
     entries = raw_entries(run_git(["diff", "-z", "--raw", "--no-abbrev", "-M", *DIFF_FLAGS, mb, head, "--"], repo))
 
     findings, spec_changed, checked = [], None, 0
