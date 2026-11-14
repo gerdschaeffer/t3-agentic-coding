@@ -7,7 +7,8 @@ Folders: for each of claude, codex, opencode, <root>/.<p>/agents or else <root>/
 Exit 0: every agent file matches its row. Exit 1: drift, or input over a bound. Exit 2: bad
 arguments, an unreadable or malformed models.md, an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
-Reads files only. Symlinks are problems, never followed, --root included. File contents are never printed; every
+Reads files only. Symlinks are problems, never followed, --root included; a --models inside --root has no
+symlink below --root, one outside has only its leaf checked. File contents are never printed; every
 printed value goes through plain().
 """
 
@@ -43,13 +44,32 @@ def plain(value):
     return s if len(s) <= 200 else s[:200] + "..."
 
 
-def load_rows(path):
+def open_models(path, root):
+    """fd of the models file. Inside root, no component below root may be a symlink: each one is opened
+    O_NOFOLLOW from its parent's fd. Outside root only the leaf is checked (runner ancestors may be links)."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    absolute, root = Path(os.path.abspath(path)), os.path.abspath(root)
+    if not absolute.is_relative_to(root):
+        return os.open(path, flags)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        *folders, leaf = absolute.relative_to(root).parts or (".",)
+        for part in folders:
+            below = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = below
+        return os.open(leaf, flags, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
+def load_rows(path, root):
     """{(folder, agent): (provider, model, effort)} from the first table with HEADER; None when too large.
 
     Opened like an agent file: no symlink, no wait on a FIFO, a regular file only, a bounded read.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = open_models(path, root)
         with os.fdopen(fd, "rb") as f:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise Usage("models file is not a regular file")
@@ -223,7 +243,7 @@ def main(argv=None):
             return 1
         if not root.is_dir():
             raise Usage("--root is not a folder")
-        rows = load_rows(args.models)
+        rows = load_rows(args.models, root)
         if rows is None:
             print(f"too large: models file over {MAX_MODELS_BYTES}")
             return 1

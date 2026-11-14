@@ -13,6 +13,9 @@ repository, an unknown revision, or a git timeout (stdout empty, message on stde
 Limits: the lines are self-declared and any matching line counts, including one inside a quoted or
 fenced example in the body; this is a consistency check, not authentication. Merge commits are
 skipped, so changes made in a merge resolution carry no trailer requirement.
+
+SIGTERM unwinds through run_git's cleanup, which kills git's process group; SIGKILL of the script
+cannot be handled, so git's group is then left to the runner.
 """
 
 import argparse
@@ -85,10 +88,10 @@ def run_git(args, repo):
         except subprocess.TimeoutExpired:
             die("git timed out")
     finally:
-        if p.poll() is None or code is None:  # timeout or overflow: git and everything it started
+        if code is None:  # timeout, overflow or exception: kill the group before reaping, so its pgid stays git's
             try:
                 os.killpg(p.pid, signal.SIGKILL)
-            except OSError:
+            except OSError:  # ProcessLookupError, or EPERM for a group of zombies on macOS
                 pass
             p.wait()
         p.stdout.close()
@@ -111,7 +114,19 @@ def missing(message):
     return "missing Agent line" if tier else "missing Tier line" if agent else "missing Agent and Tier lines"
 
 
+def on_sigterm(signum, frame):
+    raise SystemExit(143)
+
+
 def main(argv=None):
+    previous = signal.signal(signal.SIGTERM, on_sigterm)
+    try:
+        return run(argv)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def run(argv):
     ap = argparse.ArgumentParser(description="Check Agent:/Tier: lines on an agent branch.")
     ap.add_argument("--branch", required=True)
     ap.add_argument("--base", required=True)

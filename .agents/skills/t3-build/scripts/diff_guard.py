@@ -17,6 +17,9 @@ decides whether it is relevant. False negatives: an equal-count rewrite (`assert
 `assert True`), an assertion style the table does not list, test logic weakened without touching
 assertion lines. Two paths that differ only by case are not handled specially. The human reviews
 the diff in every case.
+
+SIGTERM unwinds through run_git's cleanup, which kills git's process group; SIGKILL of the script
+cannot be handled, so git's group is then left to the runner.
 """
 
 import argparse
@@ -103,10 +106,10 @@ def run_git(args, repo):
         except subprocess.TimeoutExpired:
             die("git timed out")
     finally:
-        if p.poll() is None or code is None:  # timeout or overflow: git and everything it started
+        if code is None:  # timeout, overflow or exception: kill the group before reaping, so its pgid stays git's
             try:
                 os.killpg(p.pid, signal.SIGKILL)
-            except OSError:
+            except OSError:  # ProcessLookupError, or EPERM for a group of zombies on macOS
                 pass
             p.wait()
         p.stdout.close()
@@ -184,7 +187,19 @@ def shrink(repo, mb, head, old_sha, new_sha, old, new):
                           ":(literal)" + old, ":(literal)" + new], repo))
 
 
+def on_sigterm(signum, frame):
+    raise SystemExit(143)
+
+
 def main(argv=None):
+    previous = signal.signal(signal.SIGTERM, on_sigterm)
+    try:
+        return run(argv)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def run(argv):
     ap = argparse.ArgumentParser(description="Fail when tests or assertions are removed without a spec change.")
     ap.add_argument("--base", required=True)
     ap.add_argument("--head", required=True)
