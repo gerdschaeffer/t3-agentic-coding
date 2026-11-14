@@ -148,6 +148,23 @@ workflow: publish the required result for the current merge candidate (base and 
 retire head-only successes, use a new required status context in the same change. A new context
 alone does not help: once it has succeeded on an unchanged head, another retarget can reuse it.
 
+## Pending before any fallible read, and on failure
+
+The workflow passes the event's head SHA to the script as `HEAD_SHA`. Before its first read of the
+pull request (which supplies the real head SHA) the script writes `pending` for that SHA, when it has the
+exact shape of 40 lower-case hex characters; any other value is ignored. If the first read fails, or
+the job fails at any point, the required check stays unmet instead of showing an old success on a
+retargeted pull request.
+
+A second step, `if: failure()`, writes `pending` for the same `HEAD_SHA` (same shape test, same
+token and context) when the gate step failed, so a crash anywhere in the script is covered too.
+
+Limits: `issue_comment` runs carry no pull request payload, so there is no head SHA from the event and
+both mechanisms do nothing for them (a comment cannot retarget a pull request). If the GitHub API is
+unavailable, no status can be written by either mechanism, and an old success stays. The early
+`pending` can precede a run that later stops for another reason; that is intended: the status stays
+pending until a run finishes.
+
 ## Auto-merge only into the default branch
 
 By default only the repository's default branch is eligible for auto-merge. A PR whose base branch is
@@ -161,9 +178,9 @@ to the default branch cannot consume an old success.
 To allow other bases set `auto_base_branches = ["main", "release/1"]` under `[merge]` in
 `risk-policy.toml`; only the listed names count (the default branch is not implied). A malformed
 list, or an unreadable base or default branch, stops the run with the status pending (the one
-exception: the first `gh pr view` call, which also supplies the head SHA, cannot write a status when it
-fails, as before this rule; a failure there on a retargeted PR leaves the old status and an armed
-auto-merge as they were). The gate reads
+exception: a run without a usable event head SHA, that is an `issue_comment` run, or one where the
+status write itself fails, cannot write a status before the first pull request read; see the section
+on pending before any fallible read). The gate reads
 the default branch with one extra `gh api repos/<repo>` call per run.
 
 ## Setup per repository

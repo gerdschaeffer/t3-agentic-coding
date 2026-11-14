@@ -45,3 +45,19 @@ jobs:
           GH_TOKEN: ${{ secrets.RISK_GATE_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # The gate step failed before writing a status: keep the required check unmet.
+      # HEAD_SHA is empty for issue_comment events; then this step does nothing.
+      - name: Keep the status pending when the gate failed
+        if: failure()
+        run: |
+          if [ "${#HEAD_SHA}" -eq 40 ]; then
+            case "$HEAD_SHA" in
+              *[!0123456789abcdef]*) ;;
+              *) gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=pending -f context=risk-gate -f description='gate run failed: rating pending' ;;
+            esac
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.RISK_GATE_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}

@@ -297,6 +297,11 @@ def main():
     # Dry run: the leader's own read-only check. Any workflow can write a commit status,
     # so the leader decides from this, never from the risk-gate status.
     dry = os.environ.get("RISK_GATE_DRY_RUN") == "1"
+    # The event's head SHA, before any fallible read: if gh pr view fails, a stale success
+    # cannot stand. Shape-checked, as it goes into an API path.
+    event_sha = os.environ.get("HEAD_SHA", "")
+    if not dry and re.fullmatch(r"[0-9a-f]{40}", event_sha):
+        set_status(repo, event_sha, "pending", "rating")
     pr_info = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "headRefOid,isDraft,baseRefName"))
     sha = pr_info["headRefOid"]
     # Pending first: the required check stays unmet until this run finishes. Any crash below
