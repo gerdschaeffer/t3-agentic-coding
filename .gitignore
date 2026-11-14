@@ -2,3 +2,5 @@
 .claude/skills
 .codex/
 .opencode/
+__pycache__/
+*.pyc
