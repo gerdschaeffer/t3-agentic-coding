@@ -321,5 +321,32 @@ class AC7Docs(unittest.TestCase):
                     self.assertTrue((doc.parent / target).exists(), f"{target} does not resolve")
 
 
+class AC4bReasons(Base):
+    REASONS = "any text, with commas; and RISK-like words"
+
+    def rp(self, risk):
+        return f"review text\nVERDICT: APPROVE\n{risk}\n"
+
+    def test_ac4b_reasons_suffix_accepted(self):
+        self.ok(self.audit(comment(), self.rp(f"RISK regression=1 security=0 user=0 reasons: {self.REASONS}")))
+
+    def test_ac4b_reasons_never_printed_and_softening_still_fails(self):
+        r = self.audit(comment("APPROVE", 0, 0, 0),
+                       self.rp(f"RISK regression=1 security=0 user=0 reasons: {self.REASONS}"))
+        self.fails(r, r"^FAIL regression: comment 0, Sol 1$")
+        self.assertNotIn("any text", r.stdout)
+        self.assertNotIn("commas", r.stdout)
+
+    def test_ac4b_empty_reasons_accepted(self):
+        self.ok(self.audit(comment(), self.rp("RISK regression=1 security=0 user=0 reasons: ")))
+
+    def test_ac4b_other_trailing_text_still_exit_2(self):
+        for risk in ("RISK regression=1 security=0 user=0 and more",
+                     "RISK regression=1 security=0 user=0reasons: x",
+                     "RISK regression=4 security=0 user=0 reasons: x"):
+            with self.subTest(risk=risk):
+                self.usage_error(self.audit(comment(), self.rp(risk)), risk)
+
+
 if __name__ == "__main__":
     unittest.main()
