@@ -130,6 +130,24 @@ that has the list; they are not covered by the dated decision above):
 - The case check (the exemption and the floor) lowercases rule patterns. A character range that spans cases
   (`[A-_]`) is not folded correctly; write such patterns without it.
 
+## When the gate runs
+
+The workflow runs on `pull_request_target` (opened, synchronize, reopened, ready for review,
+converted to draft) and on the owner's rating comments. It also runs again when the base branch of
+a pull request is changed (a retarget is an `edited` event), so the rating, the lane and the status
+follow the new base and an armed auto-merge is re-evaluated. Editing only the title or the body
+does not start the gate: the job condition lets an `edited` event through only when
+`changes.base.ref.from` is present (compared with the empty string: `!= null` would fail for a
+branch named `0`).
+
+Warning: a retarget keeps the head SHA, so the old `risk-gate` success stands until the new run
+writes `pending`. If auto-merge is armed and the actor has write access, it can consume that old
+success in the gap (GitHub documents that it disables auto-merge when someone without write access changes the base).
+Disable auto-merge before retargeting a pull request. The structural fix is not part of this
+workflow: publish the required result for the current merge candidate (base and head), and, to
+retire head-only successes, use a new required status context in the same change. A new context
+alone does not help: once it has succeeded on an unchanged head, another retarget can reuse it.
+
 ## Setup per repository
 
 1. Copy `risk_gate.py`, `risk-policy.toml`, `test_risk_gate.py` to

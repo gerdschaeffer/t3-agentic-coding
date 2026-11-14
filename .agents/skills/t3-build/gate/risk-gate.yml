@@ -5,7 +5,7 @@ on:
   # pull_request_target runs THIS file from the base branch, so a PR cannot edit
   # the gate that judges it. Never check out or run the PR's code in this job.
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   issue_comment:
     # edited and deleted only re-evaluate; withdrawing is a new rating with verdict CHANGES.
     types: [created, edited, deleted]
@@ -21,7 +21,8 @@ jobs:
     # rating by the repo owner. The gate's own cards never start with that marker.
     # Org repo: replace github.repository_owner with 'your-login', the rater in the policy.
     if: >-
-      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'pull_request_target' &&
+       (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) ||
       (github.event.issue.pull_request &&
        github.event.comment.user.login == github.repository_owner &&
        (startsWith(github.event.comment.body, '<!-- risk-rating sha=') ||
