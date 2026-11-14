@@ -1576,5 +1576,30 @@ class DryRunSanitise(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------- spec 015 section 21, AC43 (F9)
+
+ROOT_RULE = "repo root: tool config and modules that shadow imports"
+MAKE_PATTERNS = ("/Makefile", "/GNUmakefile", "/makefile", "*.mk")
+
+
+class Spec015AC43Makefile(unittest.TestCase):
+    """The Makefile is the trust root of ci.yml: the shipped policy rates it regression 2 (review lane)."""
+
+    def test_root_rule_lists_the_make_patterns(self):
+        rule = next(r for r in POLICY["rule"] if r.get("reason") == ROOT_RULE)
+        for pattern in MAKE_PATTERNS:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, rule["paths"])
+        self.assertEqual(rule["regression"], 2)
+
+    def test_makefiles_rate_regression_2(self):
+        for path in ("Makefile", "GNUmakefile", "makefile", "mk/test.mk", "rules.mk", "MAKEFILE"):
+            with self.subTest(path=path):
+                scores, reasons = g.floor([f(path)], POLICY)
+                self.assertEqual(scores["regression"], 2, reasons)
+                self.assertTrue(any(r.startswith("regression 2: ") and ROOT_RULE in r for r in reasons), reasons)
+                self.assertEqual(floor_lane([f(path)], [rating()])[0], "review")
+
+
 if __name__ == "__main__":
     unittest.main()

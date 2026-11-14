@@ -428,6 +428,12 @@ def _v(var):
     return '"\\$(?:' + var + r'|\{' + var + r'\})'
 
 
+# AC39: `BASE_SHA="$(git rev-parse [options] HEAD^1)"` (quotes around HEAD^1 and a ^{commit} peel allowed).
+DERIVE_BASE = re.compile(r"""BASE_SHA="?\$\(\s*git rev-parse(?: +-[-\w]+)* +["']?HEAD\^1(?:\^\{commit\})?["']?\s*\)"?""")
+MERGE_MSG = "checkout is not the merge of the pull request head"
+TRIGGER_TYPES = ["opened", "synchronize", "reopened", "edited"]
+
+
 def check_guard(text, name):
     """AC19 static part: BASE_SHA/HEAD_SHA (and BRANCH) only from the PR event, verify both
     commits, ls-tree with the notice branch, copy from the base commit to $RUNNER_TEMP, run that
@@ -438,15 +444,17 @@ def check_guard(text, name):
     script = GUARDS[name]
     if name not in jobs_of(doc):
         p.append(f"no job named {name} (the required check name)")
-    want = {"BASE_SHA": f"${{{{ {BASE_EXPR} }}}}", "HEAD_SHA": f"${{{{ {HEAD_EXPR} }}}}",
-            "BRANCH": "${{ github.head_ref }}"}
+    # AC39 supersedes: BASE_SHA is no longer an env: value from the event; the run step derives it from HEAD^1.
+    want = {"HEAD_SHA": f"${{{{ {HEAD_EXPR} }}}}", "BRANCH": "${{ github.head_ref }}"}
     defs = {k: [] for k in want}
     for path, node in walk(doc):
         if path and path[-1] == "env" and isinstance(node, dict):
+            if "BASE_SHA" in node:
+                p.append(f"BASE_SHA is set in env: ({node['BASE_SHA']!r}); AC39 derives it from HEAD^1")
             for k in want:
                 if k in node:
                     defs[k].append(norm_expr(node[k]))
-    for k in ["BASE_SHA", "HEAD_SHA"] + (["BRANCH"] if name == "commit-trailers" else []):
+    for k in ["HEAD_SHA"] + (["BRANCH"] if name == "commit-trailers" else []):
         if not defs[k]:
             p.append(f"{k} is not set in env:")
     for k, vals in defs.items():
@@ -456,8 +464,11 @@ def check_guard(text, name):
     runs = "\n".join(run_texts(doc))
     if re.search(r"GITHUB_ENV|GITHUB_PATH", runs):
         p.append("a run step writes GITHUB_ENV or GITHUB_PATH")
-    if re.search(r"\b(?:BASE_SHA|HEAD_SHA|BRANCH|RUNNER_TEMP)\s*=", runs):
-        p.append("a run step assigns BASE_SHA, HEAD_SHA, BRANCH or RUNNER_TEMP")
+    if re.search(r"\b(?:HEAD_SHA|BRANCH|RUNNER_TEMP)\s*=", runs):
+        p.append("a run step assigns HEAD_SHA, BRANCH or RUNNER_TEMP")
+    for m in re.finditer(r"\bBASE_SHA\s*=", runs):  # AC39: the only assignment is the HEAD^1 derivation
+        if not DERIVE_BASE.match(runs, m.start()):
+            p.append(f"a run step assigns BASE_SHA other than from git rev-parse HEAD^1: {runs[m.start():m.start() + 50]!r}")
     for m in re.finditer(r"\.github/ci/", runs):
         if not re.search(r"(?::|--\s+[\"']?)$", runs[max(0, m.start() - 4):m.start()]):
             p.append(f"run step uses the checked-out {runs[m.start():m.start() + 40].split()[0]} directly")
@@ -598,8 +609,11 @@ def git_env(root):
 
 
 def pr_repo(root, script, on_base):
-    """Work tree of the PR (head checked out): base has the guard script (unless not on_base),
-    the PR replaces it with a copy that must never run."""
+    """Work tree of the PR as actions/checkout gives it on pull_request (AC39): the merge commit is
+    checked out, HEAD^1 = the base tip, HEAD^2 = the PR head. `old` is an older base commit without
+    the guard script (a stale event base); the branch point after it has the script (unless not
+    on_base), the PR replaces it with a copy that must never run, and the base moved on after the
+    branch point. -> (ws, base tip, PR head, old)."""
     ws = root / "workspace"
     ws.mkdir(parents=True)
     env = git_env(root)
@@ -612,18 +626,32 @@ def pr_repo(root, script, on_base):
 
     git("init", "-q")
     git("symbolic-ref", "HEAD", "refs/heads/main")
+    (ws / "README.md").write_text("old\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "old base, guard not installed")
+    old = git("rev-parse", "HEAD")
     (ws / "README.md").write_text("base\n")
     (ws / ".github" / "ci").mkdir(parents=True)
     if on_base:
         (ws / ".github" / "ci" / script).write_text(BASE_STUB)
     git("add", "-A")
     git("commit", "-q", "-m", "base")
-    base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "-b", "pr")
     (ws / "README.md").write_text("pr\n")
     (ws / ".github" / "ci" / script).write_text(PR_STUB)
     git("add", "-A")
     git("commit", "-q", "-m", "pr")
-    return ws, base, git("rev-parse", "HEAD")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    (ws / "NEWS").write_text("the base moved on\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base moves on")
+    base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--detach", base)
+    git("merge", "-q", "--no-ff", "--no-edit", "pr")
+    if git("rev-parse", "HEAD^1") != base or git("rev-parse", "HEAD^2") != head:
+        raise AssertionError("fixture: the checkout is not the merge of the PR head into the base tip")
+    return ws, base, head, old
 
 
 def runner_env(root, ws, extra_bin=None):
@@ -653,7 +681,11 @@ def want_args(name, base, head):
 
 def guard_case(doc, job_id, name, case, root):
     script = GUARDS[name]
-    ws, base, head = pr_repo(root, script, on_base=case != "absent")
+    ws, base, head, old = pr_repo(root, script, on_base=case != "absent")
+    if case == "not-merge":  # AC39: the PR head itself is checked out, not the merge commit
+        subprocess.run([REAL_GIT, "-C", str(ws), "checkout", "-q", "--detach", head], env=git_env(root), check=True)
+    if case == "missing-base":  # AC39: the base is HEAD^1 now, so its object is removed from the checkout
+        (ws / ".git" / "objects" / base[:2] / base[2:]).unlink()
     env, bin_, temp = runner_env(root, ws)
     if case in ("ls-tree-error", "show-error"):
         sub = case.split("-error")[0]
@@ -663,15 +695,18 @@ def guard_case(doc, job_id, name, case, root):
         g.chmod(0o755)
     log, marker = root / "stub.json", root / "pr-ran"
     env.update(STUB_LOG=str(log), STUB_PR_MARKER=str(marker), STUB_EXIT="1" if case == "present-fail" else "0")
-    ctx = {BASE_EXPR: MISSING_SHA if case == "missing-base" else base,
-           HEAD_EXPR: MISSING_SHA if case == "missing-head" else head, "github.head_ref": "agent/x"}
+    # AC39: the event's base sha is stale in "stale-base" (the branch point) and must be ignored.
+    ctx = {BASE_EXPR: old if case == "stale-base" else base,
+           HEAD_EXPR: {"missing-head": MISSING_SHA, "head-mismatch": old}.get(case, head), "github.head_ref": "agent/x"}
     ok, out = run_job(doc, job_id, ctx, ws, env, root)
     label = f"{name}/{job_id} [{case}]"
     p = []
     if marker.exists():
         p.append(f"{label}: the PR's own .github/ci/{script} ran")
     notice = any(l.strip() == NOTICE for l in out.splitlines())
-    if case == "present":
+    if case in ("not-merge", "head-mismatch") and MERGE_MSG not in out:
+        p.append(f"{label}: no {MERGE_MSG!r} in the output: {out[-300:]!r}")
+    if case in ("present", "stale-base"):
         if not ok:
             p.append(f"{label}: job failed although the base script passed: {out[-300:]!r}")
         if not log.exists():
@@ -706,7 +741,7 @@ def guard_case(doc, job_id, name, case, root):
     return p
 
 
-def guard_exec_problems(doc, name, tmp):
+def guard_exec_problems(doc, name, tmp, cases=GUARD_CASES):
     script = GUARDS[name]
     job_ids = [jid for jid, job in jobs_of(doc).items()
                if any(f".github/ci/{script}" in (s.get("run") or "") for s in steps_of(job) if isinstance(s.get("run"), str))]
@@ -714,7 +749,7 @@ def guard_exec_problems(doc, name, tmp):
         return [f"no job runs the guard entry steps for .github/ci/{script}"]
     p = []
     for jid in job_ids:
-        for case in GUARD_CASES:
+        for case in cases:
             root = Path(tempfile.mkdtemp(dir=tmp)).resolve()
             try:
                 p += guard_case(doc, jid, name, case, root)
@@ -1204,9 +1239,10 @@ class TestAC19GuardSteps(TempCase):
             ("extra direct run", lambda t, n: add_step(t, f"- run: python3 .github/ci/{GUARDS[n]} --help")),
             ("direct exec", lambda t, n: add_step(t, f"- run: ./.github/ci/{GUARDS[n]}")),
             ("copy from the checkout", lambda t, n: add_step(t, f'- run: cp .github/ci/{GUARDS[n]} "$RUNNER_TEMP/"')),
-            ("BASE_SHA from head", lambda t, n: sub1(t, r"github\.event\.pull_request\.base\.sha", HEAD_EXPR)),
-            ("BASE_SHA from base_ref", lambda t, n: sub1(t, r"\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}",
-                                                         "${{ github.base_ref }}")),
+            # AC39 supersedes the event-field anchors: BASE_SHA is derived from HEAD^1 in the run step.
+            ("BASE_SHA from head", lambda t, n: sub1(t, r"(BASE_SHA=\"?\$\(\s*git rev-parse[^)\n]*HEAD)\^1", r"\1^2")),
+            ("BASE_SHA from base_ref", lambda t, n: sub1(t, r"\$\(\s*git rev-parse[^)\n]*HEAD\^1[^)\n]*\)",
+                                                         "$(git rev-parse origin/main)")),
             ("HEAD_SHA from github.sha", lambda t, n: sub1(t, r"\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}",
                                                            "${{ github.sha }}")),
             ("BASE_SHA overridden in GITHUB_ENV", lambda t, n: add_step(t, '- run: echo "BASE_SHA=x" >> "$GITHUB_ENV"')),
@@ -1332,6 +1368,167 @@ class TestSecurityRound1AC21Templates(TempCase):
         self.assertEqual(check_no_lazy_fetch(doc('          GIT_NO_LAZY_FETCH: "1"\n'), "diff-guard"), [])
         self.assertNotEqual(check_no_lazy_fetch(doc(""), "diff-guard"), [])
         self.assertNotEqual(check_no_lazy_fetch(doc('          GIT_NO_LAZY_FETCH: "0"\n'), "diff-guard"), [])
+
+
+# ---------------------------------------------------------------- second security pass (spec section 21)
+
+AC39_CASES = ("stale-base", "not-merge", "head-mismatch")
+
+
+def check_trigger_types(text, name):
+    """AC39 (F3): the guard templates trigger on pull_request with exactly these four types."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    on = doc.get("on")
+    pr = on.get("pull_request") if isinstance(on, dict) else None
+    types = pr.get("types") if isinstance(pr, dict) else None
+    if not isinstance(types, list) or len(types) != len(TRIGGER_TYPES) or sorted(map(str, types)) != sorted(TRIGGER_TYPES):
+        p.append(f"pull_request types {types!r} are not exactly {TRIGGER_TYPES}")
+    if isinstance(pr, dict) and set(pr) != {"types"}:
+        p.append(f"pull_request has filters other than types: {sorted(pr)}")
+    return p
+
+
+def check_merge_base(text, name):
+    """AC39 (F2): the guard step does not use the event's base sha. It verifies that HEAD^2 is the
+    PR head (else MERGE_MSG), then derives BASE_SHA from HEAD^1, before verifying, listing and copying."""
+    doc, p = parsed(text)
+    if p:
+        return p
+    if re.search(r"pull_request\s*(?:\.\s*base\s*\.|\[\s*'base'\s*\])", code_text(text)):
+        p.append("the event's pull_request.base is used")
+    run_copy = re.compile(r"python3 " + _v("RUNNER_TEMP") + "/" + re.escape(GUARDS[name]) + '"')
+    steps = [s for j in jobs_of(doc).values() for s in steps_of(j)
+             if isinstance(s.get("run"), str) and run_copy.search(s["run"])]
+    if len(steps) != 1:
+        return p + [f"want one guard step that runs the base copy, found {len(steps)}"]
+    run = steps[0]["run"]
+    pats = {"merge check": r"git rev-parse\b[^\n]*\bHEAD\^2\b", "message": re.escape(MERGE_MSG),
+            "derive": DERIVE_BASE.pattern, "verify base": "git cat-file -e " + _v("BASE_SHA"),
+            "ls-tree": "git ls-tree --name-only " + _v("BASE_SHA")}
+    at = {}
+    for label, pat in pats.items():
+        hits = [m.start() for m in re.finditer(pat, run)]
+        if not hits:
+            p.append(f"guard step missing: {label}")
+        else:
+            at[label] = hits[0]
+    if len(DERIVE_BASE.findall(run)) > 1:
+        p.append("BASE_SHA is derived more than once")
+    for a, b in (("merge check", "derive"), ("message", "derive"), ("derive", "verify base"), ("derive", "ls-tree")):
+        if a in at and b in at and at[a] > at[b]:
+            p.append(f"{a} comes after {b}")
+    return p
+
+
+def move_derive_first(t, n):
+    m = re.search(r"(?m)^ *[^\n]*BASE_SHA=[^\n]*\n", t)
+    if not m:
+        raise AssertionError("mutation anchor: no BASE_SHA= line")
+    line, t = m.group(0), t[:m.start()] + t[m.end():]
+    r = re.search(r"(?m)^ *run: \|\n( *)", t)
+    if not r:
+        raise AssertionError("mutation anchor: no run: |")
+    return t[:r.end(1) - len(r.group(1))] + r.group(1) + line.lstrip(" ") + t[r.end(1) - len(r.group(1)):]
+
+
+def types_drop(t, n):
+    if re.search(r"types:\s*\[", t):
+        return sub1(t, r"\bedited\s*,\s*|,\s*edited\b", "")
+    return del_line(t, r"^\s*- edited\s*$")
+
+
+def types_add(t, n):
+    if re.search(r"types:\s*\[", t):
+        return sub1(t, r"(types:\s*\[)", r"\1labeled, ")
+    return sub1(t, r"^(\s*)- edited\s*$", r"\1- edited\n\1- labeled")
+
+
+def event_base_in_env(t, n):
+    return sub1(t, r"^( *)(HEAD_SHA:[^\n]*\n)", r"\1\2\1EVENT_BASE: ${{ github.event.pull_request.base.sha }}\n")
+
+
+class TestSecondPassAC39MergeCommitBase(TempCase):
+    """AC39 (F2, F3): trigger types, merge-commit verification, BASE_SHA from HEAD^1."""
+
+    def test_static_trigger_types(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(check_trigger_types(read(self, n), n), [])
+
+    def test_static_merge_base(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(check_merge_base(read(self, n), n), [])
+
+    def test_static_trigger_types_mutations(self):
+        TestAC19GuardSteps.assert_mutations(self, check_trigger_types, [
+            ("edited dropped", types_drop),
+            ("labeled added", types_add),
+            ("types removed", lambda t, n: del_line(t, r"^\s*types:")),
+            ("branches filter", lambda t, n: sub1(t, r"^(  pull_request:[^\n]*\n)", r"\1    branches: [main]\n")),
+        ])
+
+    def test_static_merge_base_mutations(self):
+        TestAC19GuardSteps.assert_mutations(self, check_merge_base, [
+            ("message changed", lambda t, n: sub1(t, re.escape(MERGE_MSG), "checkout mismatch")),
+            ("no HEAD^2 check", lambda t, n: re.sub(r"HEAD\^2", "HEAD", sub1(t, r"HEAD\^2", "HEAD"))),
+            ("BASE_SHA from HEAD~1", lambda t, n: sub1(t, r"(BASE_SHA=\"?\$\(\s*git rev-parse[^)\n]*HEAD)\^1", r"\1~1")),
+            ("BASE_SHA from HEAD^2", lambda t, n: sub1(t, r"(BASE_SHA=\"?\$\(\s*git rev-parse[^)\n]*HEAD)\^1", r"\1^2")),
+            ("event base in env", event_base_in_env),
+            ("event base read in another step", lambda t, n: add_step(t, "- env:", "    B: ${{ github.event.pull_request['base']['sha'] }}",
+                                                                       '  run: echo "$B"')),
+            ("derived before the merge check", move_derive_first),
+        ])
+
+    def test_check_guard_rejects_base_sha_from_the_event(self):
+        """The superseded AC19 form (BASE_SHA from the event in env:) now fails check_guard."""
+        TestAC19GuardSteps.assert_mutations(self, check_guard, [
+            ("BASE_SHA from the event in env:", lambda t, n: sub1(t, r"^( *)(HEAD_SHA:[^\n]*\n)",
+                                                                  r"\1\2\1BASE_SHA: ${{ github.event.pull_request.base.sha }}\n")),
+        ])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec_stale_base_non_merge_and_head_mismatch(self):
+        for n in GUARDS:
+            with self.subTest(template=n):
+                self.assertEqual(guard_exec_problems(parse(read(self, n)), n, self.tmp, AC39_CASES), [])
+
+    @unittest.skipUnless(BASH, "bash not found: the guard entry steps cannot run here")
+    def test_exec_mutations(self):
+        for n in GUARDS:
+            t = read(self, n)
+            muts = [("BASE_SHA from the event", sub1(event_base_in_env(t, n), r"\$\(\s*git rev-parse[^)\n]*HEAD\^1[^)\n]*\)",
+                                                     '${EVENT_BASE}')),
+                    ("merge check made vacuous", re.sub(r"HEAD\^2", "$HEAD_SHA", sub1(t, r"HEAD\^2", "$HEAD_SHA")))]
+            for label, bad in muts:
+                with self.subTest(template=n, mutation=label):
+                    self.assertNotEqual(bad, t)
+                    self.assertNotEqual(guard_exec_problems(parse(bad), n, self.tmp, AC39_CASES), [],
+                                        f"the executable step test missed: {label}")
+
+
+class TestSecondPassAC43ReadmeMakefile(unittest.TestCase):
+    """AC43 (F9): the README says the Makefile is the trust root of ci.yml and is rated by the policy."""
+
+    @staticmethod
+    def problems(text):
+        paras = re.split(r"\n\s*\n", text)
+        if any(re.search(r"\bMakefile\b", s) and re.search(r"(?i)\btrust root\b", s)
+               and re.search(r"(?i)\bci\.yml\b", s) and re.search(r"(?i)\bpolic(?:y|ies)\b|risk-policy", s) for s in paras):
+            return []
+        return ["no README paragraph says the Makefile is the trust root of ci.yml and is rated by the policy"]
+
+    def test_readme_names_the_makefile_as_trust_root(self):
+        self.assertTrue(README.is_file(), f"README missing: {README}")
+        self.assertEqual(self.problems(README.read_text()), [])
+
+    def test_checker_self_test(self):
+        ok = "The `Makefile` is the trust root of `ci.yml`; risk-policy.toml rates it (review lane).\n"
+        self.assertEqual(self.problems(ok), [])
+        self.assertNotEqual(self.problems(ok.replace("trust root", "entry point")), [])
+        self.assertNotEqual(self.problems("The Makefile is the trust root of ci.yml.\n\nThe policy rates it.\n"), [])
 
 
 if __name__ == "__main__":

@@ -412,8 +412,7 @@ class TestAC3Problems(Base):
         r = self.root()
         d = r / "claude" / "agents"
         (d / "notes.txt").write_text("not an agent\n")
-        (d / "sub").mkdir()
-        (d / "sub" / "deep.md").write_text("---\nname: deep\n---\n")
+        # lead, spec 015 AC41: a folder inside an agents folder is now a problem, so none here
         (r / "codex" / "agents" / "readme.md").write_text("ignored in the codex folder\n")
         self.clean(self.check(r))
 
@@ -1103,6 +1102,225 @@ class TestSecurityRound4AC35AgentFileNonBlocking(Base):
 
     def test_regular_file_still_passes(self):
         self.clean(self.run_case("none"))
+
+
+# ---------------------------------------------------------------- second security pass (spec section 21)
+
+class TestSecondPassAC40CommandMarker(Base):
+    """AC40 (F6): plain() prints `##[` as `## [`."""
+
+    def test_plain_breaks_the_marker(self):
+        from test_check_trailers import marker_cases
+        marker_cases(self, load_check_agents(self, "check_agents_ac40").plain)
+
+    def test_file_name_with_marker(self):
+        r = self.root()
+        (r / "claude" / "agents" / "##[add-mask]x.md").write_text(
+            "---\nname: ##[add-mask]x\nmodel: claude-x-1\neffort: high\n---\n")
+        cp = self.check(r)
+        self.problems(cp, rf"{P}claude/agents/## \[add-mask\]x\.md: no row in models\.md")
+        self.assertNotIn("##[", cp.stdout)
+
+
+class TestSecondPassAC41UnexpectedFolders(Base):
+    """AC41 (F7): a folder inside an agents folder, and a singular `agent` folder for OpenCode, are problems."""
+
+    def fresh(self, **kw):
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
+        return self.root(**kw)
+
+    def test_folder_inside_agents_folder(self):
+        for prov in ("claude", "codex", "opencode"):
+            with self.subTest(provider=prov):
+                r = self.fresh()
+                (r / prov / "agents" / "sub").mkdir()
+                (r / prov / "agents" / "sub" / "deep.md").write_text("---\nname: deep\n---\n")
+                self.problems(self.check(r), rf"{P}{prov}/agents/sub/?: unexpected folder",
+                              extra=[rf"{P}{prov}/agents/sub/deep\.md.*"])
+
+    def test_folder_with_agent_extension(self):
+        r = self.root()
+        (r / "claude" / "agents" / "delta.md").mkdir()
+        self.problems(self.check(r), rf"{P}claude/agents/delta\.md/?: unexpected folder")
+
+    def test_empty_folder_dot_layout(self):
+        r = self.root(dot=True)
+        (r / ".codex" / "agents" / "x").mkdir()
+        self.problems(self.check(r), rf"{P}\.codex/agents/x/?: unexpected folder")
+
+    def test_singular_opencode_folder_next_to_agents(self):
+        for dot in (False, True):
+            with self.subTest(dot=dot):
+                r = self.fresh(dot=dot)
+                d = r / (".opencode" if dot else "opencode") / "agent"
+                d.mkdir()
+                (d / "voice2.md").write_text("---\nmodel: openrouter/google/gem-4\n---\n")
+                self.problems(self.check(r), rf"{P}{re.escape(d.parent.name)}/agent/?: unexpected folder \(use agents\)")
+
+    def test_singular_opencode_folder_instead_of_agents(self):
+        for dot in (False, True):
+            with self.subTest(dot=dot):
+                r = self.fresh(dot=dot, opencode=False)
+                d = r / (".opencode" if dot else "opencode") / "agent"
+                d.mkdir(parents=True)
+                (d / "voice.md").write_text(OPENCODE["voice"])
+                cp = self.check(r)
+                self.problems(cp, rf"{P}{re.escape(d.parent.name)}/agent/?: unexpected folder \(use agents\)")
+                self.assertNotIn("has no file", cp.stdout, "a provider without an agents folder is still skipped")
+
+    def test_other_files_still_ignored(self):
+        r = self.root()
+        (r / "claude" / "agents" / "notes.txt").write_text("not an agent\n")
+        (r / "opencode" / "README.md").write_text("next to agents, not a folder\n")
+        self.clean(self.check(r))
+
+
+class TestSecondPassAC42FrontMatterLines(Base):
+    """AC42 (F8): a control character (below U+0020 other than the line end, or U+007F) in a
+    front-matter line, a bare CR included, makes the file unparsable. An indented line is accepted
+    only after a top-level key whose value is empty (a nested mapping such as `permission:`)."""
+
+    CONTROLS = ["\x00", "\x01", "\x07", "\x08", "\t", "\x0b", "\x0c", "\r", "\x1b", "\x1c", "\x1f", "\x7f"]
+    FILES = (("claude", "claude/agents/alpha.md", "description: Does: things, with colons.\n"),
+             ("opencode", "opencode/agents/voice.md", "description: Third voice.\n"))
+
+    def edit_line(self, r, rel, anchor, new):
+        f = r / rel
+        text = f.read_text()
+        self.assertIn(anchor, text)
+        f.write_bytes(text.replace(anchor, new, 1).encode())
+
+    def unparsable(self, cp, rel):
+        self.problems(cp, rf"{P}{re.escape(rel)}: unparsable \(.+\)")
+        self.assertTrue(printable_only(cp.stdout), repr(cp.stdout))
+
+    def fresh(self):
+        shutil.rmtree(self.tmp / "root", ignore_errors=True)
+        return self.root()
+
+    def test_control_character_in_a_value(self):
+        for c in self.CONTROLS:
+            for prov, rel, anchor in self.FILES:
+                with self.subTest(char=repr(c), provider=prov):
+                    r = self.fresh()
+                    self.edit_line(r, rel, anchor, anchor[:-4] + c + anchor[-4:])
+                    self.unparsable(self.check(r), rel)
+
+    def test_bare_cr_hides_a_key(self):
+        # `description: x\rmodel: evil` shows as `model: evil` on a terminal.
+        for prov, rel, anchor in self.FILES:
+            with self.subTest(provider=prov):
+                r = self.fresh()
+                self.edit_line(r, rel, anchor, "description: x\rmodel: evil\n")
+                self.unparsable(self.check(r), rel)
+
+    def test_line_of_only_a_control_character(self):
+        # \x0b, \x0c and \x1c to \x1f are whitespace to str.strip: such a line must not pass as blank.
+        for c in ("\x0b", "\x0c", "\x1c", "\x1f", "\x00"):  # "\r\n" would be a CRLF line end
+            for prov, rel, anchor in self.FILES:
+                with self.subTest(char=repr(c), provider=prov):
+                    r = self.fresh()
+                    self.edit_line(r, rel, anchor, anchor + c + "\n")
+                    self.unparsable(self.check(r), rel)
+
+    def test_control_character_in_an_indented_line(self):
+        r = self.root()
+        self.edit_line(r, "opencode/agents/voice.md", "  edit: deny\n", "  edit: de\x1bny\n")
+        self.unparsable(self.check(r), "opencode/agents/voice.md")
+
+    def test_tab_indented_line_is_unparsable(self):
+        r = self.root()
+        self.edit_line(r, "opencode/agents/voice.md", "  edit: deny\n", "\tedit: deny\n")
+        self.unparsable(self.check(r), "opencode/agents/voice.md")
+
+    def test_control_character_in_the_body_passes(self):
+        r = self.root()
+        f = r / "claude" / "agents" / "alpha.md"
+        f.write_text(f.read_text() + "Body with \x1b[31m and \t and \x7f.\n")
+        self.clean(self.check(r))
+
+    def test_indented_line_after_a_key_with_a_value(self):
+        for prov, rel, anchor in self.FILES:
+            with self.subTest(provider=prov):
+                r = self.fresh()
+                self.edit_line(r, rel, anchor, anchor + "  extra: y\n")
+                self.unparsable(self.check(r), rel)
+
+    def test_indented_line_hides_a_second_model(self):
+        r = self.root()
+        self.edit_line(r, "claude/agents/alpha.md", "model: claude-x-1\n", "model: claude-x-1\n  model: evil\n")
+        self.unparsable(self.check(r), "claude/agents/alpha.md")
+
+    def test_indented_first_line(self):
+        for prov, rel, _ in self.FILES:
+            with self.subTest(provider=prov):
+                r = self.fresh()
+                f = r / rel
+                text = f.read_text()
+                self.assertTrue(text.startswith("---\n"))
+                f.write_text("---\n  stray: x\n" + text[4:])
+                self.unparsable(self.check(r), rel)
+
+    def test_indented_line_after_nested_block_and_key_with_value(self):
+        r = self.root()
+        self.edit_line(r, "opencode/agents/voice.md", "  bash: deny\n", "  bash: deny\ntemperature: 0\n  extra: y\n")
+        self.unparsable(self.check(r), "opencode/agents/voice.md")
+
+    def test_nested_mapping_after_an_empty_key_passes(self):
+        r = self.root()
+        self.edit_line(r, "claude/agents/alpha.md", "effort: high\n", "effort: high\nhooks:\n  pre: none\n  post: none\n")
+        self.edit_line(r, "opencode/agents/voice.md", "  bash: deny\n", "  bash: deny\ntools:\n  read: true\n")
+        self.clean(self.check(r))
+
+    @unittest.skipUnless(REAL_STAGING.is_dir() and REAL_MODELS.is_file(), "staging/ or models.md not found")
+    def test_real_staging_still_passes(self):
+        n = sum(len(list((REAL_STAGING / p / "agents").glob(g)))
+                for p, g in (("claude", "*.md"), ("codex", "*.toml"), ("opencode", "*.md")))
+        self.clean(self.run_ca("--root", REAL_STAGING, "--models", REAL_MODELS), n=n)
+
+
+class TestSecondPassAC44RowsAndDeepToml(Base):
+    """AC44 (F12, F13): a second row for the same (provider, agent name) exits 2; a RecursionError
+    while parsing a Codex TOML file is `unparsable (invalid TOML)`, exit 1, no traceback."""
+
+    ROW_ALPHA = "| alpha | Alpha | Claude | claude-x-1 | high |\n"
+    ROW_REV = "| rev | Reviewer | Codex | gpt-z-1 | medium |\n"
+
+    def test_duplicate_row(self):
+        variants = {
+            "same row twice": MODELS.replace(self.ROW_ALPHA, self.ROW_ALPHA * 2),
+            "other values": MODELS.replace(self.ROW_ALPHA, self.ROW_ALPHA + "| alpha | Alt | Claude | claude-q-1 | low |\n"),
+            "in a comma cell": MODELS.replace("| beta, gamma |", "| beta, alpha |"),
+            "twice in one cell": MODELS.replace("| beta, gamma |", "| beta, gamma, beta |"),
+            "codex twice": MODELS.replace(self.ROW_REV, self.ROW_REV * 2),
+        }
+        for label, text in variants.items():
+            with self.subTest(case=label):
+                self.assertNotEqual(text, MODELS, "fixture")
+                shutil.rmtree(self.tmp / "root", ignore_errors=True)
+                self.usage_error(self.check(self.root(), self.models(text)), label)
+
+    def test_same_name_for_two_providers_is_not_a_duplicate(self):
+        text = MODELS.replace(self.ROW_REV, self.ROW_REV + "| alpha | Alpha | Codex | gpt-z-1 | low |\n")
+        r = self.root()
+        (r / "codex" / "agents" / "alpha.toml").write_text(
+            'name = "alpha"\nmodel = "gpt-z-1"\nmodel_reasoning_effort = "low"\n')
+        self.clean(self.check(r, self.models(text)), n=CLEAN_COUNT + 1)
+
+    def test_deeply_nested_toml(self):
+        bodies = {"arrays": "x = " + "[" * 30000 + "]" * 30000 + "\n",
+                  "inline tables": "x = " + "{a=" * 12000 + "}" * 12000 + "\n"}
+        for label, body in bodies.items():
+            with self.subTest(case=label):
+                shutil.rmtree(self.tmp / "root", ignore_errors=True)
+                r = self.root()
+                f = r / "codex" / "agents" / "rev.toml"
+                f.write_text(CODEX["rev"] + body)
+                self.assertLessEqual(f.stat().st_size, 64 * 1024, "fixture within the 64 KB file limit")
+                cp = self.check(r)
+                self.problems(cp, rf"{P}codex/agents/rev\.toml: unparsable \(invalid TOML\)")
+                self.assertNotIn("Traceback", cp.stderr)
+                self.assertNotIn("RecursionError", cp.stdout + cp.stderr)
 
 
 if __name__ == "__main__":

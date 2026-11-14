@@ -1680,5 +1680,29 @@ class TestSecurityRound4AC37ExitAfterRestore(Base):
         restore_case(self, SCRIPT, ["--branch", "agent/x", "--base", head, "--head", head, "--repo", r.path])
 
 
+
+# ---------------------------------------------------------------- second security pass (spec section 21)
+
+def marker_cases(test, plain):
+    """AC40 (F6), shared by the three scripts' tests: `##[` is printed as `## [`, the other rules stay."""
+    test.assertEqual(plain("a/##[add-mask]x"), "a/## [add-mask]x")
+    test.assertEqual(plain("##[error]x ##[warning]y"), "## [error]x ## [warning]y")
+    test.assertEqual(plain("##\x1b[x"), "## [x")  # the existing control-character rule still applies
+    test.assertEqual(plain("# [a] #[b] ## a"), "# [a] #[b] ## a")
+    for v in ("##[" * 100, "x" * 198 + "##[add-mask]y", "a/##[" + "b" * 300):
+        with test.subTest(value=v[:30]):
+            out = plain(v)
+            test.assertNotIn("##[", out)
+            test.assertTrue(all(c.isprintable() for c in out), repr(out))
+            test.assertLessEqual(len(out), 203, "the existing cut at 200 plus ... still applies")
+
+
+class TestSecondPassAC40CommandMarker(Base):
+    """AC40 (F6): plain() breaks the legacy runner command marker `##[`."""
+
+    def test_plain_breaks_the_marker(self):
+        marker_cases(self, load_module(self, SCRIPT, "check_trailers_ac40").plain)
+
+
 if __name__ == "__main__":
     unittest.main()

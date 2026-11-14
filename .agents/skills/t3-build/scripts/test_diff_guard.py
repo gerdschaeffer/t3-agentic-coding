@@ -1483,5 +1483,93 @@ class TestSecurityRound4AC37ExitAfterRestore(Base):
         restore_case(self, SCRIPT, ["--base", head, "--head", head, "--repo", r.path])
 
 
+
+# ---------------------------------------------------------------- second security pass (spec section 21)
+
+MULTI = "multiple merge bases: cannot compare"
+
+
+class TestSecondPassAC38MergeBases(Base):
+    """AC38 (F1): the diff base comes from `git merge-base --all`. One base: as before. More than one:
+    `multiple merge bases: cannot compare` and exit 1. None: exit 2."""
+
+    def criss_cross(self, head_extra=None):
+        """R; main side M1 changes src; branch side X1 adds tests/test_x.py. The base tip merges
+        (M1, X1) and keeps the test; the head merges (X1, M1) and drops it. Merge bases: M1 and X1."""
+        r = self.new_repo()
+        root = {"tests/test_a.py": PY, "src/a.py": SRC}
+        R = r.snap(root, msg="Root\n")
+        m1_files = dict(root, **{"src/a.py": SRC + "# main\n"})
+        M1 = r.snap(m1_files, parents=[R], msg="Main side\n")
+        X1 = r.snap(dict(root, **{"tests/test_x.py": PY}), parents=[R], msg="Branch side\n")
+        base = r.snap(dict(m1_files, **{"tests/test_x.py": PY}), parents=[M1, X1], msg="Merge on main\n",
+                      ref="refs/heads/main")
+        head = r.snap(dict(m1_files, **(head_extra or {})), parents=[X1, M1], msg="Merge on branch, test dropped\n",
+                      ref="refs/heads/agent/x")
+        bases = r.git("merge-base", "--all", base, head).split()
+        self.assertEqual(sorted(bases), sorted([M1, X1]), "fixture: two merge bases")
+        self.assertIn(("D", "tests/test_x.py"), [(s[0], s[-1]) for s in r.status(X1, head)], "fixture")
+        self.assertNotIn("tests/test_x.py", [s[-1] for s in r.status(M1, head)], "fixture: hidden from M1")
+        return r, base, head
+
+    def multi(self, cp):
+        self.assertEqual(cp.returncode, 1, f"exit {cp.returncode}; stdout={cp.stdout!r}; stderr={cp.stderr!r}")
+        self.assertIn(MULTI, cp.stdout.splitlines(), cp.stdout)
+        self.assertNotIn("test files checked", cp.stdout)
+        self.assertNotIn("notice:", cp.stdout)
+
+    def test_criss_cross_fails_closed(self):
+        r, base, head = self.criss_cross()
+        self.multi(self.guard(r, base, head))
+        self.multi(self.run_dg("--base", "main", "--head", "agent/x", "--repo", r.path))
+
+    def test_criss_cross_with_a_spec_change_still_fails(self):
+        # The diff cannot be computed, so nothing can authorize it.
+        r, base, head = self.criss_cross({"docs/specs/x/spec.md": "# spec\n"})
+        self.multi(self.guard(r, base, head))
+
+    def test_single_merge_base_unchanged(self):
+        r = self.new_repo()
+        b0 = r.snap({"tests/test_a.py": PY, "src/a.py": SRC}, ref="refs/heads/main")
+        head = r.snap({"src/a.py": SRC}, parents=[b0], ref="refs/heads/agent/x")
+        moved = r.snap({"tests/test_a.py": PY, "src/a.py": SRC, "src/b.py": SRC}, parents=[b0], ref="refs/heads/main")
+        self.assertEqual(r.git("merge-base", "--all", moved, head).split(), [b0], "fixture: one merge base")
+        cp = self.guard(r, moved, head)
+        self.violations(cp, removed("tests/test_a.py"))
+        self.assertNotIn(MULTI, cp.stdout)
+        r2, base, head = self.pair({"tests/test_a.py": PY}, {"tests/test_a.py": PY + "#\n"}, name="clean")
+        self.clean(self.guard(r2, base, head), n=1)
+
+    def test_no_merge_base_exit_2(self):
+        r = self.new_repo()
+        a = r.snap({"tests/test_a.py": PY}, ref="refs/heads/main")
+        b = r.snap({"src/a.py": SRC}, ref="refs/heads/agent/x")  # a second root commit: unrelated history
+        self.assertEqual(r.git("merge-base", "--all", a, b, check=False), "", "fixture: no merge base")
+        self.usage_error(self.guard(r, a, b), "no merge base")
+
+
+class TestSecondPassAC40CommandMarker(Base):
+    """AC40 (F6): plain() also breaks the legacy runner command marker: `##[` is printed as `## [`."""
+
+    def test_plain_breaks_the_marker(self):
+        from test_check_trailers import marker_cases
+        marker_cases(self, load(self).plain)
+
+    def test_file_name_with_marker(self):
+        name = "tests/##[add-mask]x/test_a.py"
+        r, base, head = self.pair({name: PY, "src/a.py": SRC}, {"src/a.py": SRC})
+        cp = self.guard(r, base, head)
+        self.violations(cp, removed("tests/## [add-mask]x/test_a.py"))
+        self.assertNotIn("##[", cp.stdout)
+
+    def test_marker_in_shrink_and_notice(self):
+        t = "tests/test_##[error]z.py"
+        s = "docs/specs/##[add-mask]s/spec.md"
+        r, base, head = self.pair({t: PY, s: "# s\n"}, {t: drop(PY, "        assert x == 1"), s: "# s2\n"})
+        cp = self.guard(r, base, head)
+        self.exempt(cp, "docs/specs/## [add-mask]s/spec.md", shrink("tests/test_## [error]z.py", 1, 0))
+        self.assertNotIn("##[", cp.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
