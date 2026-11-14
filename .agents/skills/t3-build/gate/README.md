@@ -150,16 +150,20 @@ alone does not help: once it has succeeded on an unchanged head, another retarge
 
 ## Auto-merge only into the default branch
 
-A PR whose base branch is not the repository's default branch never gets the auto lane: the gate adds
-the blocker `base branch <name> is not an auto-merge branch (<allowed>)` and the lane is `review`
-(in shadow mode the card says `shadow, would be review`). Stacked PRs are merged by the owner, and
+By default only the repository's default branch is eligible for auto-merge. A PR whose base branch is
+outside the allowed list (the default branch, or `auto_base_branches`) gets the blocker `base branch
+<name> is not an auto-merge branch (<allowed>)`: an `auto` lane becomes `review` (in shadow mode the
+card says `shadow, would be review`), while a `block` lane stays `block`. Stacked PRs are merged by the owner, and
 the bottom of the stack lands in the default branch. This also closes the retarget race for the
 common case: a PR that was small against a stacked base is not auto-armed there, so retargeting it
 to the default branch cannot consume an old success.
 
 To allow other bases set `auto_base_branches = ["main", "release/1"]` under `[merge]` in
 `risk-policy.toml`; only the listed names count (the default branch is not implied). A malformed
-list, or an unreadable base or default branch, stops the run with the status pending. The gate reads
+list, or an unreadable base or default branch, stops the run with the status pending (the one
+exception: the first `gh pr view` call, which also supplies the head SHA, cannot write a status when it
+fails, as before this rule; a failure there on a retargeted PR leaves the old status and an armed
+auto-merge as they were). The gate reads
 the default branch with one extra `gh api repos/<repo>` call per run.
 
 ## Setup per repository

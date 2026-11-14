@@ -62,3 +62,16 @@ branch name comes from the GitHub API of the same repository. The rule only remo
 
 Fixing the stale-success window itself (binding the required result to base and head, or a new status
 context: still escalated, spec 017); changing how reviews or ratings are read; the CI templates.
+
+## Review log
+
+Sol security round 1: (1) P1: AC4's 'pending' guarantee does not hold when the first `gh pr view` call
+itself fails (HTTP 403/429): that call supplies the head SHA, so no status can be written before it and
+nothing is disarmed. This is the pre-existing bootstrap limitation (a failure there leaves the old
+status and an armed auto-merge in place), not a regression; the base was added to the same call by
+spec change 1 and the tests pin it. The README now says so. **Escalated to the human:** closing it needs
+the head SHA from a source that cannot fail the same way (for example the event payload, passed to the
+script) or a second status context; part of the structural fix of spec 017. (2) P3: README wording
+corrected (allowed list, `block` stays `block`). Residual, deferred with the race: reads are snapshots;
+a rename or retarget after both reads is not revalidated (`--match-head-commit` does not bind the base).
+
