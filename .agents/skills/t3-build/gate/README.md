@@ -130,6 +130,15 @@ that has the list; they are not covered by the dated decision above):
 - The case check (the exemption and the floor) lowercases rule patterns. A character range that spans cases
   (`[A-_]`) is not folded correctly; write such patterns without it.
 
+## When the gate runs
+
+The workflow runs on `pull_request_target` (opened, synchronize, reopened, ready for review,
+converted to draft) and on the owner's rating comments. It also runs again when the base branch of
+a pull request is changed (a retarget is an `edited` event), so the rating, the lane and the status
+follow the new base and an armed auto-merge is re-evaluated. Editing only the title or the body
+does not start the gate: the job condition lets an `edited` event through only when
+`changes.base.ref.from` is present.
+
 ## Setup per repository
 
 1. Copy `risk_gate.py`, `risk-policy.toml`, `test_risk_gate.py` to
