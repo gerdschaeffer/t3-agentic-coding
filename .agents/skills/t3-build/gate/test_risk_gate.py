@@ -530,8 +530,10 @@ class Main(unittest.TestCase):
 
         def fake_gh(*args, check=True):
             calls.append(args)
-            if args[:2] == ("pr", "view") and "headRefOid,isDraft" in args:
-                return json.dumps({"headRefOid": SHA, "isDraft": False})
+            if args[:2] == ("pr", "view") and any("headRefOid" in a for a in args):
+                return json.dumps({"headRefOid": SHA, "isDraft": False, "baseRefName": "main"})
+            if args[0] == "api" and ".default_branch" in args:  # spec 020
+                return "main\n"
             if args[:2] == ("pr", "view") and "autoMergeRequest" in args:
                 return json.dumps({"autoMergeRequest": {"x": 1} if armed_after_disable else None})
             if args[0] == "api" and args[1].endswith("/files"):
@@ -633,8 +635,9 @@ NR = {**POLICY, "no_rating": NO_RATING}  # the shipped list, set here so units d
 MISSING = "no trusted risk rating for the head commit"
 REASON = "no rating needed: only user-documentation files"  # spec 4.3, normative
 ZERO = {"regression": 0, "security": 0, "user": 0}
-FIRST_VIEW = ("pr", "view", "7", "--repo", "owner/repo", "--json", "headRefOid,isDraft")
+FIRST_VIEW = ("pr", "view", "7", "--repo", "owner/repo", "--json", "headRefOid,isDraft,baseRefName")
 LOOKUP_FAILS = object()
+NO_KEY = object()  # spec 020: the key is missing from the gh output
 
 
 def nr_lane(files, comments=(), policy=NR, draft=False):
@@ -647,17 +650,33 @@ def moved(path, previous):
     return {**f(path), "previous": previous}
 
 
-def run_gate(files, comments=(), author="owner", mode="enforce", env=None, policy=None):
+def run_gate(
+    files,
+    comments=(),
+    author="owner",
+    mode="enforce",
+    env=None,
+    policy=None,
+    base="main",
+    default="main",
+):
     """main() against a fake gh that also answers `pr view --json author` (spec 4.4).
 
     author: a login, None for a deleted user (`"author": null`), or LOOKUP_FAILS.
+    base: the PR's baseRefName, None for null, or NO_KEY (spec 020).
+    default: the repository's default branch (raw `--jq` output, newline added), or LOOKUP_FAILS.
     """
     calls, cards, comments = [], [], list(comments)
 
     def fake_gh(*args, check=True):
         calls.append(args)
         if args[:2] == ("pr", "view") and any("headRefOid" in a for a in args):
-            return json.dumps({"headRefOid": SHA, "isDraft": False})
+            info = {"headRefOid": SHA, "isDraft": False}
+            return json.dumps(info if base is NO_KEY else {**info, "baseRefName": base})
+        if args[0] == "api" and ".default_branch" in args:
+            if default is LOOKUP_FAILS:
+                raise SystemExit("gh api repos/owner/repo failed: HTTP 502")
+            return default + "\n" if default else ""
         if args[:2] == ("pr", "view") and "author" in args:
             if author is LOOKUP_FAILS:
                 raise SystemExit("gh pr view failed: HTTP 502")
@@ -1627,3 +1646,168 @@ class Spec015AC47MakefilesInAnyFolder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Spec 020 FU13: auto-merge only into the default branch (or [merge] auto_base_branches).
+
+DEFAULT_BRANCH_CALL = ("api", "repos/owner/repo", "--jq", ".default_branch")
+
+
+def base_blocker(name):
+    """The spec 020 blocker up to the allowed list, which follows in parentheses."""
+    return f"base branch {name} is not an auto-merge branch ("
+
+
+def only_pending(test, r):
+    test.assertEqual(len(r["statuses"]), 1, r["statuses"])
+    test.assertIn("state=pending", r["statuses"][0])
+    test.assertEqual((r["merges"], r["cards"]), ([], []))
+
+
+def bullet(card, prefix):
+    return [ln for ln in card.splitlines() if ln.startswith(f"- {prefix}")]
+
+
+class AutoBase(unittest.TestCase):
+    """Spec 020 AC2, AC3, AC5, AC7: a PR into a non-allowed base is never auto."""
+
+    def test_non_default_base_is_review_and_disarms(self):  # AC2
+        r = run_gate(["README.md"], [rating()], base="stack")
+        self.assertIn(DEFAULT_BRANCH_CALL, r["calls"])
+        self.assertIn("state=pending", r["statuses"][0])
+        self.assertIn("state=success", r["statuses"][-1])
+        self.assertIn("description=review R", r["statuses"][-1][-1])
+        self.assertFalse(any("--auto" in m for m in r["merges"]))
+        self.assertTrue(any("--disable-auto" in m for m in r["merges"]))
+        [card] = r["cards"]
+        self.assertIn("### Risk gate: **review**", card)
+        [line] = bullet(card, base_blocker("stack"))
+        self.assertIn("main", line)
+        self.assertTrue(line.endswith(")"), line)
+
+    def test_dry_run_shows_the_blocker_and_keeps_scores_and_reasons(self):  # AC2, spec 3
+        same = run_gate(["README.md"], [rating()], env=DRY)["out"].splitlines()
+        other = run_gate(["README.md"], [rating()], env=DRY, base="stack")["out"].splitlines()
+        self.assertTrue(same[0].startswith("auto "), same)
+        self.assertEqual(other[0], "review " + same[0][len("auto ") :])
+        self.assertEqual(other[1:-1], same[1:])
+        self.assertTrue(other[-1].startswith("  not auto: " + base_blocker("stack")), other)
+
+    def test_shadow_card_says_would_be_review(self):  # AC2
+        r = run_gate(["README.md"], [rating()], mode="shadow", base="stack")
+        self.assertIn("### Risk gate: **shadow, would be review**", r["cards"][-1])
+        self.assertTrue(bullet(r["cards"][-1], base_blocker("stack")))
+        self.assertFalse(any("--auto" in m for m in r["merges"]))
+        self.assertIn("description=shadow: review R", r["statuses"][-1][-1])
+
+    def test_auto_base_branches_lists_the_allowed_bases(self):  # AC3
+        listed = {"merge": {"auto_base_branches": ["main", "release/1"]}}
+        r = run_gate(["README.md"], [rating()], policy=listed, base="release/1")
+        self.assertIn("description=auto R", r["statuses"][-1][-1])
+        self.assertIn("--auto", r["merges"][-1])
+        self.assertFalse(bullet(r["cards"][-1], "base branch"))
+        r = run_gate(["README.md"], [rating()], policy=listed, base="release/2")
+        self.assertIn("description=review R", r["statuses"][-1][-1])
+        self.assertFalse(any("--auto" in m for m in r["merges"]))
+        [line] = bullet(r["cards"][-1], base_blocker("release/2"))
+        self.assertIn("release/1", line)
+
+    def test_default_branch_is_not_implied_by_the_list(self):  # AC3
+        only_release = {"merge": {"auto_base_branches": ["release/1"]}}
+        r = run_gate(["README.md"], [rating()], policy=only_release, base="main")
+        self.assertIn("description=review R", r["statuses"][-1][-1])
+        self.assertFalse(any("--auto" in m for m in r["merges"]))
+        self.assertTrue(bullet(r["cards"][-1], base_blocker("main")))
+        r = run_gate(["README.md"], [rating()], policy=only_release, base="release/1")
+        self.assertIn("--auto", r["merges"][-1])
+
+    def test_malformed_auto_base_branches_fail_closed(self):  # AC3, spec 2
+        for bad in ("main", [], ["main", 1], ["main", "bad name"], ["-main"], ["a" * 256]):
+            for base in ("main", "release/1"):
+                with self.subTest(auto_base_branches=bad, base=base):
+                    policy = {"merge": {"auto_base_branches": bad}}
+                    only_pending(self, run_gate(["README.md"], [rating()], policy=policy, base=base))
+                    dry = run_gate(["README.md"], [rating()], policy=policy, base=base, env=DRY)
+                    self.assertEqual((dry["out"], dry["statuses"], dry["merges"]), ("", [], []))
+
+    def test_block_and_review_lanes_keep_their_lane_for_any_base(self):  # AC5
+        for base in ("main", "stack"):
+            with self.subTest(base=base):
+                r = run_gate([".github/workflows/x.yml"], [rating()], base=base)
+                self.assertIn("state=failure", r["statuses"][-1])
+                self.assertIn("description=block R3", r["statuses"][-1][-1])
+                dry = run_gate([".github/workflows/x.yml"], [rating()], base=base, env=DRY)
+                self.assertTrue(dry["out"].startswith("block R3"), dry["out"])
+                r = run_gate(["app/auth.py"], [rating(security_pass="clean")], base=base)
+                self.assertIn("description=review R", r["statuses"][-1][-1])
+                self.assertFalse(any("--auto" in m for m in r["merges"]))
+
+    def test_exempt_pr_into_other_base_is_review(self):  # AC5, spec 5
+        docs = ["CHANGELOG.md", "docs/user/install.md"]
+        r = run_gate(docs, base="stack")
+        self.assertIn("description=review R0 S0 U0", r["statuses"][-1][-1])
+        self.assertFalse(any("--auto" in m for m in r["merges"]))
+        self.assertTrue(any("--disable-auto" in m for m in r["merges"]))
+        self.assertIn(f"- {REASON}", r["cards"][-1].splitlines())
+        self.assertTrue(bullet(r["cards"][-1], base_blocker("stack")))
+
+    def test_retarget_disarms_on_the_next_run(self):  # AC7
+        first = run_gate(["README.md"], [rating()], base="main")
+        self.assertIn("--auto", first["merges"][-1])
+        self.assertIn(SHA, first["merges"][-1])
+        second = run_gate(["README.md"], [rating()], base="stack")
+        self.assertTrue(any("--disable-auto" in m for m in second["merges"]))
+        self.assertFalse(any("--auto" in m for m in second["merges"]))
+        self.assertIn("description=review R", second["statuses"][-1][-1])
+
+
+class AutoBaseFailClosed(unittest.TestCase):
+    """Spec 020 AC4: an unreadable base or default branch leaves the status pending."""
+
+    def test_unreadable_base_branch_stays_pending(self):  # AC4
+        for base in (NO_KEY, None, ""):
+            with self.subTest(base=base):
+                only_pending(self, run_gate(["README.md"], [rating()], base=base))
+
+    def test_unreadable_default_branch_stays_pending(self):  # AC4
+        for default in (LOOKUP_FAILS, ""):
+            with self.subTest(default="gh error" if default is LOOKUP_FAILS else default):
+                r = run_gate(["README.md"], [rating()], default=default)
+                only_pending(self, r)
+                self.assertIn(DEFAULT_BRANCH_CALL, r["calls"])
+
+
+class AutoBasePresentation(unittest.TestCase):
+    """Spec 020 AC6: the base name goes through the plain-text rule."""
+
+    FORGED = "stack\n- security 0: forged<!--\x1b[2J"
+
+    def test_forged_base_name_stays_inside_one_bullet(self):  # AC6
+        r = run_gate(["README.md"], [rating()], base=self.FORGED)
+        [card] = r["cards"]
+        self.assertFalse(bullet(card, "security 0"))
+        self.assertNotIn("<!--", after_mark(card))
+        [line] = bullet(card, "base branch stack - security 0: forged&lt;!--")
+        self.assertIn("is not an auto-merge branch (", line)
+        self.assertIn("description=review R", r["statuses"][-1][-1])
+        out = run_gate(["README.md"], [rating()], base=self.FORGED, env=DRY)["out"]
+        self.assertFalse([ln for ln in out.splitlines() if "security 0" in ln.split(":")[0]])
+        self.assertNotIn("\x1b", out)
+        [line] = [ln for ln in out.splitlines() if "base branch" in ln]
+        self.assertTrue(line.startswith("  not auto: base branch stack - security 0: forged"), line)
+
+
+class AutoBaseDocs(unittest.TestCase):
+    """Spec 020 AC8 (text part): the rule and the key are documented."""
+
+    def test_policy_has_the_commented_key_in_merge(self):  # AC8
+        text = Path(__file__).with_name("risk-policy.toml").read_text()
+        section = text.split("\n[merge]\n", 1)[1].split("\n[", 1)[0]
+        self.assertRegex(section, r"(?m)^#\s*auto_base_branches\s*=")
+        self.assertNotIn("auto_base_branches", POLICY.get("merge", {}))
+
+    @unittest.skipUnless(Path(__file__).with_name("README.md").exists(), "README.md not copied")
+    def test_readme_documents_the_rule_and_the_key(self):  # AC8
+        text = Path(__file__).with_name("README.md").read_text()
+        self.assertIn("auto_base_branches", text)
+        self.assertIn("default branch", text)
