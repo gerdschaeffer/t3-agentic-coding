@@ -465,3 +465,42 @@ and 5 need a changed workflow or a concurrent writer in the same checkout; they 
 | AC35 | **Agent files are opened non-blocking and checked.** `check_agents.py` opens every agent file with `O_RDONLY\|O_NOFOLLOW\|O_NONBLOCK` relative to the pinned folder descriptor and requires `S_ISREG(os.fstat(fd).st_mode)` before reading; a FIFO or other non-regular file that replaced a regular file after the directory scan gives `<rel path>: not a regular file` (exit 1) and never hangs, with or without a writer on the FIFO. | tests |
 | AC36 | **The SIGTERM handler lives only around a child.** `main` no longer installs it. `run_git` installs the flag-setting handler right before `Popen` and restores the previous handler after the cleanup/reap (in a `finally`); outside `run_git` SIGTERM has its default effect, so a script blocked writing a large report to a full stdout pipe ends on SIGTERM. A signal that arrives after the child started is handled as AC30. A flag set at the moment of restoring still produces exit 143 (checked after the restore). AC28 and AC30 keep holding. Test: 700 test files deleted (long names, about 150 KB of report) with the stdout pipe not drained, SIGTERM sent, the process ends within 3 s; and a SIGTERM during `run_git` still leaves no git or child alive. | tests |
 | AC37 | **Exit code after restore.** No code path returns 0 after a SIGTERM was received while a child was running: the final exit code is computed after the handler is restored. Test: patch `signal.signal` in the driver so that a SIGTERM is delivered to the process right before the restoring call on a clean run (`BASE == HEAD`); the script exits 143. | tests |
+
+## 21. Second security pass (security-engineer): 13 findings, triage
+
+Sol approved after round 5 (two residual lows below). The independent `security-engineer` pass found
+3 medium, 6 low and 4 nit items. Fixed here (new ACs): F1, F2, F3, F6, F7, F8, F9, F12, F13.
+Documented by the lead: F10, F11. Escalated to the human, not fixed (below): F4, F5, the
+`pull_request_target` alternative of F10, and the two Sol residuals. A security finding is fixed or
+escalated, never silently declined.
+
+| AC | Finding | Requirement | Evidence |
+|---|---|---|---|
+| AC38 | F1 (medium) | `diff_guard` computes the diff base with `git merge-base --all BASE HEAD`. Exactly one base: as before. More than one: the line `multiple merge bases: cannot compare` and exit 1. None: exit 2 as before. | tests (a criss-cross fixture whose merge commit hides a deleted test) |
+| AC39 | F2, F3 (medium) | The three guard templates trigger on `pull_request` with `types: [opened, synchronize, reopened, edited]` (exactly those four). The guard step no longer trusts `pull_request.base.sha`: after verifying that the checkout is the merge commit of the pull request (`git rev-parse HEAD^2` equals the event's `head.sha`, else the step fails with `checkout is not the merge of the pull request head`), `BASE_SHA` is `git rev-parse HEAD^1`. `HEAD_SHA` stays the event's `head.sha` and `--head` stays `HEAD_SHA`. The `ls-tree`, `show` and script arguments use that `BASE_SHA`. All other rules of section 7 stay (env-only expressions, base copy through `$RUNNER_TEMP`, fetch-depth 0, `GIT_NO_LAZY_FETCH`, the present/absent/error branches). Unverified here: that `actions/checkout` on `pull_request` yields the merge commit with `HEAD^1` the current base tip (it is GitHub's documented default); the product-repo run of section 11 records it. This supersedes parts of AC16 (trigger `types`) and AC19 (BASE from the event fields): the tests of those ACs change only as far as this requires. | tests (static, mutations, executable step logic with a merge-commit fixture, a non-merge checkout fails) |
+| AC40 | F6 (low) | `plain()` in the three scripts also breaks the legacy runner command marker: the substring `##[` is printed as `## [` (with the existing rules). A file name `a/##[add-mask]x` is printed without the marker. | tests |
+| AC41 | F7 (low) | `check_agents` reports, with exit 1 and one line each: a folder inside an agents folder (`<rel>: unexpected folder`) and a singular `.opencode/agent` or `opencode/agent` folder next to or instead of `agents` (`<rel>: unexpected folder (use agents)`). | tests |
+| AC42 | F8 (low) | A front-matter line that contains a control character (below U+0020 other than the line end, or U+007F), including a bare CR, makes the file unparsable. An indented line is accepted only directly after a top-level key whose value is empty (a nested mapping such as `permission:`); otherwise the file is unparsable. The staged real files still pass. | tests |
+| AC43 | F9 (low) | `gate/risk-policy.toml`, rule "repo root: tool config and modules that shadow imports", gets `/Makefile`, `/GNUmakefile`, `/makefile` and `*.mk` (regression 2: review lane). `ci/README.md` says the Makefile is the trust root of `ci.yml` and is rated by the policy. The existing gate tests for the shipped policy keep passing. | gate test, README test |
+| AC44 | F12, F13 (nit) | A second row for the same (provider, agent name) in `models.md` exits 2. A `RecursionError` while parsing a Codex TOML file is reported as `unparsable (invalid TOML)` (exit 1, no traceback). | tests |
+
+**Documented by the lead:** F10: the README sentence on the base copy is corrected (on
+`pull_request` the workflow file itself comes from the merge commit, so a PR that edits a
+workflow is protected only by the block lane and code owners). F11: the README limits name
+the test conventions the patterns do not cover (`__tests__/`, `spec/`, `*_spec.*`).
+
+**Escalated to the human (needs your decision before or at merge):**
+- F4: with a spec change in the diff the guard passes with a plain `notice:` line; any file under
+  a `docs/specs/` folder anywhere counts, including an empty file. A visible `::warning::`
+  annotation and root-anchored spec patterns were not added (they change the AC13 output forms).
+- F5: a commit with a redundant second parent counts as a merge and skips the trailer check
+  (spec section 5 accepts skipped merges). Dropping the skip would fail the usual update-from-main
+  merge commits.
+- F10 (design): running the three guards on `pull_request_target` with the base checked out and the
+  head fetched as objects only would protect them from a PR that edits the workflow. The spec fixed
+  `pull_request`; the gate already blocks `.github/` changes.
+- Sol residuals: a SIGINT delivered at exactly the wrong moment can skip git cleanup; a malicious
+  `git` that `setsid()`s escapes the process group (the `git` executable is the runner's, not the PR's).
+- Accepted by the spec, still true: branch name spoofing, self-declared trailers, equal-count
+  assertion rewrites, `models.md` and an agent file changed together, the `actions/checkout@v4` tag
+  until the human pins it.
