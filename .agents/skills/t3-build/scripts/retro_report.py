@@ -144,7 +144,8 @@ def read_git(path):
         merge = re.match(r"Merge pull request #(\d+)", subject)
         sq = SQUASH.search(subject)
         squash = bool(sq) and sha in first and len(parents.split()) < 2
-        prn = int(merge.group(1)) if merge else int(sq.group(1)) if squash else None
+        num = merge.group(1) if merge else sq.group(1) if squash else None
+        prn = int(num) if num and len(num) <= 10 else None  # a longer number is still a PR, with no lane; int() of thousands of digits raises
         tier = re.search(r"^Tier: *(\S+)", body, re.M)
         tier = tier.group(1) if tier else ""
         commits.append({"sha": sha, "date": cdate, "pr": subject.startswith("Merge pull request #") or squash, "prn": prn,

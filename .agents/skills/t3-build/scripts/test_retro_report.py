@@ -1417,6 +1417,16 @@ class TestFU12LaneMetrics(Base):
         out, t = self.m6(r)
         self.assertEqual([t[k][1] for k in ("auto", "review", "block", "unknown")], ["0"] * 4, out)
 
+    def test_review_round1_oversized_pr_number_does_not_crash(self):
+        # review round 1 (lead): int() of a 4301-digit subject number raised ValueError
+        r = self.new_repo("bignum")
+        r.commit("Hostile (#" + "9" * 4301 + ")", date="2026-01-05")
+        r.commit("Merge pull request #" + "8" * 4301 + " from o/x", date="2026-01-06")
+        out = self.ok(self.report("--git", str(r.path)))
+        self.assertEqual(find(rows(out, H_X), "pull requests merged")[2], "2", out)
+        t = {row[0]: row for row in rows(out, H_M6)}
+        self.assertEqual(t["unknown"][1], "2", out)
+
     # ---- AC4: counts per lane
     def test_ac4_counts_per_lane(self):
         r = self.lane_history({"auto": (3, 0), "review": (2, 0), "block": (1, 0), "unknown": (1, 0)})
