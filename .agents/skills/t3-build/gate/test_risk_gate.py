@@ -1479,5 +1479,101 @@ class FoldedFloorMain(unittest.TestCase):
                     self.assertFalse(any("--auto" in m for m in r["merges"]))
 
 
+DRY = {"RISK_GATE_DRY_RUN": "1"}
+FORGED_NAME = "app/AUTH/x.py\n- security 0: forged"  # spec 014 AC2
+# A rating is split on line breaks, so its fields carry only non-breaking controls (spec 014).
+RATING_CTRL = "a\x1b[2J b\x1b]0;title\x07 c\td\x00e\x7ff\x9bg"
+NAME_CTRL = "app/AUTH/a\x1b[2J b\x1b]0;title\x07 c\rd\te\x00f\x7fg\x85h i\x9bj.py"
+
+
+def dry_counted(files, comments=()):
+    seen = []
+    real = g.decide
+
+    def spy(*a, **kw):
+        seen.append(real(*a, **kw))
+        return seen[-1]
+
+    with mock.patch.object(g, "decide", spy):
+        r = run_gate(files, comments, env=DRY)
+    [(_, _, reasons, blockers)] = seen
+    return r["out"], reasons, blockers
+
+
+class DryRunSanitise(unittest.TestCase):
+    """Spec 014 FU8: the dry run prints one line per reason, no control characters."""
+
+    def test_ordinary_output_is_byte_identical(self):  # AC1
+        r = run_gate(
+            ["app/f1.py", "app/AUTH/x.py"],
+            [rating(user=2, disputed="F1, F2", security_pass="clean")],
+            env=DRY,
+        )
+        self.assertEqual(
+            r["out"],
+            "review R1 S2 U2 head aaaaaaaaaaaa\n"
+            "  regression 1: app/f1.py (ordinary code)\n"
+            "  regression 1: app/AUTH/x.py (ordinary code)\n"
+            "  regression 1: app/AUTH/x.py (auth, permissions, sessions or secrets)\n"
+            "  security 2: app/AUTH/x.py (auth, permissions, sessions or secrets)\n"
+            "  user 2: reviewer: ok\n"
+            "  not auto: disputed findings: F1, F2\n",
+        )
+        self.assertEqual((r["statuses"], r["merges"], r["cards"]), ([], [], []))
+
+    def test_forged_file_name_is_one_line(self):  # AC2
+        out, _, _ = dry_counted([FORGED_NAME], [rating()])
+        lines = out.split("\n")
+        self.assertFalse(
+            [ln for ln in lines if ln.lstrip().startswith(("- security 0", "security 0: forged"))],
+            out,
+        )
+        self.assertEqual(
+            out,
+            "review R1 S2 U0 head aaaaaaaaaaaa\n"
+            "  regression 1: app/AUTH/x.py - security 0: forged (ordinary code)\n"
+            "  regression 1: app/AUTH/x.py - security 0: forged"
+            " (auth, permissions, sessions or secrets)\n"
+            "  security 2: app/AUTH/x.py - security 0: forged"
+            " (auth, permissions, sessions or secrets)\n",
+        )
+
+    def test_escape_sequences_become_spaces(self):  # AC3
+        name_shown = "".join(c if c.isprintable() else " " for c in NAME_CTRL)
+        ctrl_shown = "".join(c if c.isprintable() else " " for c in RATING_CTRL)
+        self.assertEqual(name_shown, "app/AUTH/a [2J b ]0;title  c d e f g h i j.py")
+        self.assertEqual(ctrl_shown, "a [2J b ]0;title  c d e f g")
+        out, _, _ = dry_counted(
+            [NAME_CTRL],
+            [rating(user=2, reasons=RATING_CTRL, disputed=RATING_CTRL)],
+        )
+        self.assertEqual([c for c in out if c != "\n" and not c.isprintable()], [], repr(out))
+        for bad in ("\x1b", "\x07", "\r", "\x00", "\x7f", "\x85", " ", "\x9b", "\t"):
+            self.assertNotIn(bad, out)
+        lines = out.split("\n")
+        self.assertIn(f"  security 2: {name_shown} (auth, permissions, sessions or secrets)", lines)
+        self.assertIn(f"  user 2: reviewer: {ctrl_shown}", lines)
+        self.assertIn(f"  not auto: disputed findings: {ctrl_shown}", lines)
+        self.assertTrue(out.startswith("review R1 S2 U2 head aaaaaaaaaaaa\n"))
+
+    def test_one_line_per_reason_and_blocker(self):  # AC4
+        for files, comments in (
+            ([FORGED_NAME], [rating()]),
+            ([FORGED_NAME, NAME_CTRL], [rating(regression=2, user=2, reasons=RATING_CTRL)]),
+            ([NAME_CTRL], [rating(user=2, reasons=RATING_CTRL, disputed=RATING_CTRL)]),
+            ([NAME_CTRL, "app/f1.py"], []),  # no rating: blockers only from the gate
+        ):
+            with self.subTest(files=files, rated=bool(comments)):
+                out, reasons, blockers = dry_counted(files, comments)
+                self.assertTrue(out.endswith("\n"))
+                self.assertEqual(len(out.split("\n")) - 1, 1 + len(reasons) + len(blockers), out)
+                body = out.split("\n")[1:-1]
+                self.assertEqual(len(body), len(reasons) + len(blockers))
+                self.assertTrue(all(ln.startswith("  ") for ln in body), out)
+                self.assertEqual(
+                    sum(ln.startswith("  not auto: ") for ln in body), len(blockers), out
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
