@@ -128,4 +128,4 @@ Format: [commit-trailers.md](.agents/skills/t3-build/references/commit-trailers.
 
 ## Status
 
-The skills `release`, `maintain` and `milestone-audit` and the `t3-build` changes are not written yet. [PLAN.md](PLAN.md) lists them as WP2 to WP7. The risk gate has not been run against a real repository. The `effort` key in the agent files and the whole-folder skills link are untested.
+WP1 to WP9 are merged: the gate changes, the tier step, the event log, the `release`, `milestone-audit` and `maintain` skills, the retro report and the CI templates with their guard scripts. What is open needs a human or a product repository: installing the agents (WP0), the pilot slice (WP10) and scheduling, enforce mode and the replay test (WP11). The risk gate has not been run against a real repository. The `effort` key in the agent files and the whole-folder skills link are untested. See [PLAN.md](PLAN.md) and [docs/HANDOVER.md](docs/HANDOVER.md).
