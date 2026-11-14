@@ -1222,5 +1222,109 @@ class TestReviewRound1(Base):
         self.assertFalse(marker.exists(), "a hostile repo config ran a program")
 
 
+# ---------------------------------------------------------------- FU11 squash-merged PR count
+
+class TestFU11SquashCount(Base):
+    def git_prs(self, r, *extra):
+        out = self.ok(self.report("--git", str(r.path), *extra))
+        return find(rows(out, H_X), "pull requests merged")[2], out
+
+    def squash_repo(self, name="sq"):
+        r = self.new_repo(name)
+        r.commit("Add x (#1)", date="2026-01-05")
+        r.commit("Fix y (#2)", date="2026-01-12")
+        return r
+
+    # AC1
+    def test_ac1_squash_subjects_count(self):
+        n, _ = self.git_prs(self.squash_repo())
+        self.assertEqual(n, "2")
+
+    def test_ac1_no_flag_when_log_has_two_ship_slices(self):
+        r = self.squash_repo()
+        self.write_log(ships("s1", "s2"))
+        out = self.ok(self.report("--git", str(r.path)))
+        self.assertEqual(find(rows(out, H_X), "pull requests merged"), ["pull requests merged", "2", "2"])
+        self.assertEqual([f for f in flags(out) if "merged pull requests" in f], [])
+
+    def test_ac1_flag_when_log_has_no_ship_slices(self):
+        r = self.squash_repo()
+        self.write_log([ev("s1", "spec")])
+        out = self.ok(self.report("--git", str(r.path)))
+        self.assertEqual(find(rows(out, H_X), "pull requests merged"), ["pull requests merged", "0", "2"])
+        self.assertTrue(any(f.startswith("FLAG: git has 2 merged pull requests") for f in flags(out)), out)
+
+    # AC2
+    def test_ac2_merge_commit_prs_still_count(self):
+        r = self.new_repo("mc")
+        r.commit("Merge pull request #3 from o/a", date="2026-01-05")
+        r.commit("Merge pull request #4 from o/b", date="2026-01-06")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "2")
+
+    def test_ac2_mixed_history_counts_each_once(self):
+        r = self.new_repo("mixed")
+        r.commit("Add x (#1)", date="2026-01-05")
+        r.commit("Merge pull request #2 from o/b", date="2026-01-06")
+        r.commit("Fix y (#3)", date="2026-01-07")
+        r.commit("Merge pull request #4 from o/d", date="2026-01-08")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "4")
+
+    # AC3
+    def test_ac3_subjects_that_do_not_match_are_not_counted(self):
+        r = self.new_repo("nomatch")
+        for s in ("Add x", "Fix (#12) in the middle", "Empty (#)", "Letter (#a)", "Trailing (#5) text",
+                  "No space(#6)", "Open (#7", "Hash #8"):
+            r.commit(s, date="2026-01-05")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "0")
+
+    def test_ac3_side_commits_of_no_ff_merge_not_counted(self):
+        r = self.new_repo("side")
+        r.commit("Base", date="2026-01-01")
+        r.git("checkout", "-q", "-b", "side")
+        r.commit("Work one (#10)", date="2026-01-02")
+        r.commit("Work two (#11)", date="2026-01-03")
+        r.git("checkout", "-q", "main")
+        r.commit("Main work", date="2026-01-04")
+        r.git("merge", "-q", "--no-ff", "-m", "Integrate side branch", "side", date="2026-01-05")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "0")
+
+    def test_ac3_two_parent_merge_with_suffix_but_other_prefix_not_counted(self):
+        r = self.new_repo("twoparent")
+        r.commit("Base", date="2026-01-01")
+        r.git("checkout", "-q", "-b", "side")
+        r.commit("Side work", date="2026-01-02")
+        r.git("checkout", "-q", "main")
+        r.commit("Main work", date="2026-01-03")
+        r.git("merge", "-q", "--no-ff", "-m", "Merge branch side (#9)", "side", date="2026-01-05")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "0")
+
+    # AC4
+    def test_ac4_commit_matching_both_forms_counts_once(self):
+        r = self.new_repo("both")
+        r.commit("Merge pull request #7 from o/x (#7)", date="2026-01-05")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "1")
+
+    def test_ac4_real_merge_commit_matching_both_forms_counts_once(self):
+        r = self.new_repo("bothmerge")
+        r.commit("Base", date="2026-01-01")
+        r.git("checkout", "-q", "-b", "side")
+        r.commit("Side work (#7)", date="2026-01-02")
+        r.git("checkout", "-q", "main")
+        r.commit("Main work", date="2026-01-03")
+        r.git("merge", "-q", "--no-ff", "-m", "Merge pull request #7 from o/x (#7)", "side", date="2026-01-05")
+        n, _ = self.git_prs(r)
+        self.assertEqual(n, "1")
+
+    def test_ac4_since_filters_squash_prs_by_commit_date(self):
+        n, _ = self.git_prs(self.squash_repo(), "--since", "2026-01-10")
+        self.assertEqual(n, "1")
+
+
 if __name__ == "__main__":
     unittest.main()
