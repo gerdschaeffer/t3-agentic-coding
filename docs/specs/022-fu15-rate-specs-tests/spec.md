@@ -31,8 +31,12 @@ floor itself says nothing is wrong.
 5. **Unicode fold (Sol security pass round 1, S2).** The folded pass of `_found` (`fold=True`) keys
    paths and patterns with NFKC then `casefold()` instead of `str.lower`, so `docs/ſpecs/x.md`
    (U+017F folds to `s`, the same directory on a case-folding checkout) rates like `docs/specs/x.md`.
-   For ASCII input this equals `lower()`. `rate_files(..., fold=True)` and `floor` use it; the
-   exact pass is unchanged. A lookalike that no fold maps (Cyrillic) is a different directory on
+   For ASCII input this equals `lower()`. **Sol security round 2 (X1, S1):** NFKC alone can lower a
+   floor that `lower()` gave (U+0303 composes `N` into `Ñ` and erases `session`; U+FF0F becomes a
+   path separator; a one-character glob stops matching a letter that folds to two), so the folded pass
+   (`rate_files(..., fold=True)`, `floor`) is the higher of two keyings: `str.lower` (as before) and
+   NFKC + `casefold()`. The exact pass is unchanged. `floor` is therefore never lower than the exact
+   or the `lower()` result. A lookalike that no fold maps (Cyrillic) is a different directory on
    disk and for `diff_guard`'s own patterns, so it is neither a spec nor a way to replace one.
 6. **Case collisions of added files (S1).** `main` already lists the head tree
    (`git/trees/<sha>?recursive=1`); the jq now also returns `paths` (every path of the tree).
@@ -70,6 +74,7 @@ wants new specs to stay auto, add `existing_changed = 2` to the spec rule instea
 | AC5 | `main` end to end (fake `gh`): the files call asks for `status`; a PR whose files carry `status: added` for a test file is `auto` in the dry run; `status: modified` is `review`; a file object with no `status` or `null` is `review` (unknown); a renamed test (`previous_filename` and `status: renamed` in the same fake payload) is `review`, so both reach scoring together. All other existing end-to-end tests pass unchanged. | tests |
 | AC6 | `tier.py`: `docs/specs/x/spec.md` and `docs/runbooks/x.md` are `T2` (a reason names floor 2); `tests/test_x.py` stays `T1`; no other row of the existing fixture changes. | tests |
 | AC7 | Policy as shipped: the `tests` rule has `existing_changed = 2`, the new rule exists with regression 2 and exactly the five patterns, and no other rule changed (the test pins the list of rule reasons and their levels). | test |
+| AC11 | Sol round 2: `floor` is the maximum of the exact, `lower()` and NFKC-casefold passes. Root `A／B.PY` (U+FF0F) rates regression 2 (root `*.py` rule through `lower()`); a modified `app/SESSION\u0303.py` (`SESSION` + U+0303) rates security 2; a custom policy rule `/settings/?.json` (regression 3) still rates `settings/ß.JSON` 3 through `floor`; and over the whole earlier fold fixture set (AC9, the FU5 case tests, the shipped-policy paths) `floor` is at least `rate_files(.., fold=False)` and at least the `lower()` keying per dimension. | tests |
 | AC8 | Docs: `gate/README.md` names the rule, the key, the Unicode fold and the case-collision rule, the status semantics (missing means not changed, `main` maps a missing status to unknown) and the consequence; the scale table row 0 says new test files, row 2 names specs, runbooks and changed existing tests; `risk-tiers.md` has the "own spec" sentence; `ci/README.md` and the `diff_guard.py` docstring say a spec change rates 2 in the gate. | text tests |
 | AC9 | S2: `floor` gives regression 2 for `docs/ſpecs/x/spec.md` (U+017F), `docs/runbookſ/x.md`, and for a modified `teſts/test_x.py` (status `modified`); `rate_files(..., fold=False)` is unchanged for them (the exact pass is case- and fold-sensitive); every existing fold test (FU5) passes unchanged; an ASCII upper-case path gives the same result as before. | tests |
 | AC10 | S1: `main` end to end with a fake tree whose `paths` contain both `tests/test_Login.py` and `tests/test_login.py`: a PR adding `tests/test_login.py` (status `added`) is `review` and the dry run names the file; the same with `tests/teſt_x.py` and `tests/test_x.py` (a Unicode fold collision); a PR adding `tests/test_new.py` with a tree without a collision is `auto`; a tree without a `paths` key (old fake shape) behaves as before; a tree whose paths collide only among non-added files of the PR (no added test) changes no lane. | tests |
@@ -96,6 +101,9 @@ Sol spec review: round 1 CHANGES (3 should, fixed), round 2 APPROVE. Sol code re
 APPROVE, no findings. Sol security pass round 1 (high): S1 [medium] added test beside a
 case-colliding existing one rates 0 (fixed by item 6, AC10); S2 [medium] `ſ` bypasses the spec
 floor because the folded pass uses `lower()` (fixed by item 5, AC9). Both were fixed, not declined.
+Round 2 (code and security, high): S1 [should] and X1 [medium]: the NFKC keying replaced `lower()`
+and lowered some floors (composed `SESSION\u0303`, U+FF0F, `?` glob over `ß`); fixed by taking the
+maximum of both keyings (item 5, AC11).
 
 ## Non-goals
 
