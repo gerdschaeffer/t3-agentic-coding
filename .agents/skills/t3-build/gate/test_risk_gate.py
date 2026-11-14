@@ -2271,3 +2271,58 @@ class FoldAndCollisionDocs(unittest.TestCase):
         for needle in ("case collision", "NFKC"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
+
+
+# Spec 022 item 5, AC11 (Sol security round 2): the folded pass is the higher of lower() and
+# NFKC-casefold, because NFKC alone can lower a floor that lower() gave.
+
+NFKC_LOWERS = (  # (file, policy, dim, level, rule reason): lower() matches, NFKC-casefold does not
+    (f("A／B.PY"), POLICY, "regression", 2,  # U+FF0F: one component on disk, NFKC makes it a/b.py
+     "repo root: tool config and modules that shadow imports"),
+    (st("app/SESSIOÑ.py", "modified"), POLICY, "security", 2,  # N + U+0303 composes to Ñ
+     "auth, permissions, sessions or secrets"),
+    (f("settings/ß.JSON"), {**POLICY, "rule": [  # ß casefolds to ss, which ? no longer matches
+        {"reason": "settings", "paths": ["/settings/?.json"], "regression": 3}]}, "regression", 3,
+     "settings"),
+)
+FOLD_FIXTURES = [file for file, _ in FOLD_CASES] + ASCII_UPPER + [file for file, *_ in NFKC_LOWERS] + [
+    f(p) for p in FU5_PATHS + tuple(o for _, o in FU5_CASE_VARIANTS) + (
+        f"docs/{LONG_S}pecs/x.md", f"docs/runbook{LONG_S}/x.txt", ".Claude/x", "Opencode.JSON",
+        "docs/specs/x/spec.md", "src/Auth/login.py")] + [
+    st(f"te{LONG_S}ts/x.py", "modified"), f("tests/test_y.py", add=0, rem=3),
+    moved("archive/ci.txt", ".GitHub/workflows/ci.yml"), moved("app/x.py", "Opencode.json"),
+    moved(".Cursor/rules/x.mdc", "app/x.py")]
+
+
+def lower_rated(file, policy=POLICY):
+    """Reference: the old lower() keying, built from str.lower over paths and the policy patterns."""
+    low = {**file, "path": file["path"].lower()}
+    if file.get("previous"):
+        low["previous"] = file["previous"].lower()
+    return g.rate_files([low], lowered(policy), fold=False)[0]
+
+
+class FoldKeepsLower(unittest.TestCase):
+    def test_lower_keying_still_counts_where_nfkc_loses_it(self):  # AC11
+        for file, policy, dim, level, why in NFKC_LOWERS:
+            with self.subTest(path=file["path"]):
+                self.assertEqual(lower_rated(file, policy)[dim], level, "fixture: lower() matches")
+                scores, reasons = g.floor([file], policy)
+                self.assertEqual(scores[dim], level, reasons)
+                self.assertIn(f"{dim} {level}: {file['path']} ({why})", reasons)
+                self.assertEqual(g.rate_files([file], policy, fold=True)[0][dim], level)
+
+    def test_floor_is_at_least_exact_and_lower_keying(self):  # AC11
+        for file in FOLD_FIXTURES:
+            with self.subTest(path=file["path"], previous=file.get("previous")):
+                got = g.floor([file], POLICY)[0]
+                exact, low = g.rate_files([file], POLICY, fold=False)[0], lower_rated(file)
+                for dim in g.DIMS:
+                    self.assertGreaterEqual(got[dim], exact[dim], f"{dim} below the exact pass")
+                    self.assertGreaterEqual(got[dim], low[dim], f"{dim} below the lower() keying")
+
+    def test_ascii_upper_floor_as_before(self):  # AC11, guard: ASCII paths rate as before
+        for file in ASCII_UPPER:
+            with self.subTest(path=file["path"]):
+                exact, low = g.rate_files([file], POLICY, fold=False)[0], lower_rated(file)
+                self.assertEqual(g.floor([file], POLICY)[0], {d: max(exact[d], low[d]) for d in g.DIMS})
