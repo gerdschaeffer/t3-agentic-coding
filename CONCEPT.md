@@ -31,7 +31,7 @@
 |---|---|---|---|---|
 | **Claude Code** (Max plan) | Flat rate, usage limits per session and per week | First party | Lead, architecture, specs, spec review, tests, implementation, security, QA, chores | Reviewing its own code |
 | **Codex** (Pro plan) | Flat rate, usage limits | First party | Code review, security review, risk rating, review of critical specs | Routine implementation and routine spec review. Its allowance is the scarce one |
-| **OpenCode → OpenRouter** | Pay per token | Third party, differs per upstream provider | Bulk work that needs no repository, third opinion on irreversible decisions, budgeted overflow | Security-relevant code, secrets, unfixed findings |
+| **OpenCode → OpenRouter** | Pay per token | Third party, differs per upstream provider | Budgeted overflow bulk work that needs no repository, third opinion on irreversible decisions | Security-relevant code, secrets, unfixed findings |
 
 ### Data classes decide which provider may see what
 
@@ -61,7 +61,7 @@ flowchart LR
         R["Code and security reviewer,<br/>risk rater<br/>GPT-6.1 Sol"]
     end
     subgraph OR["OpenCode with OpenRouter · pay per token"]
-        B["Repo-free bulk work, overflow<br/>DeepSeek V4.1 Flash"]
+        B["Overflow for repo-free bulk work<br/>DeepSeek V4.1 Flash"]
         G["Third opinion<br/>Gemini 4 Hydrogen"]
     end
     H -- "goals, approvals, merges held pull requests" --> L
@@ -96,7 +96,7 @@ flowchart LR
 | 12 | **Consultant** | One bounded hard question, with evidence | Claude Opus 5.5 | high | Max once per open question |
 | 13 | **Third voice** | Extra opinion from a third model family | OpenRouter Gemini 4 Hydrogen | high | Irreversible decisions only |
 | 14 | **Maintainer** | Scheduled checks: dependencies, advisories, flaky tests, doc drift. It reports, the delivery loop fixes by tier | Claude Haiku 5.5, escalates to Sonnet 5.5 | low | Scheduled |
-| 15 | **Bulk worker** | Mass jobs that need no repository: translations, synthetic test data, summaries of public material. Overflow for Green work | OpenRouter DeepSeek V4.1 Flash | low | Budgeted, on demand |
+| 15 | **Bulk worker** | Overflow only: mass jobs that need no repository (translations, synthetic test data, summaries of public material) when the Claude allowance is tight. Haiku 5.5 does bulk work first | OpenRouter DeepSeek V4.1 Flash | low | Budgeted, overflow |
 
 ### Rules behind the table
 
