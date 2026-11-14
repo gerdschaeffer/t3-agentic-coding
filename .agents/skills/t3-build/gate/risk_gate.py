@@ -207,9 +207,14 @@ def in_merge_hours(policy, now=None):
 CARD_REASONS = 12
 
 
+def plain(r):
+    """One line of plain text: every non-printable character becomes a space."""
+    return "".join(c if c.isprintable() else " " for c in r)
+
+
 def show_reason(r):
     """One bullet per reason, no HTML: non-printables to spaces, cut at 300, then escape '<'."""
-    r = "".join(c if c.isprintable() else " " for c in r)
+    r = plain(r)
     if len(r) > 300:
         r = r[:297] + "..."
     return "- " + r.replace("<", "&lt;")
@@ -357,7 +362,7 @@ def main():
         rated = f"R{scores['regression']} S{scores['security']} U{scores['user']}"
         print(f"{lane} {rated} head {sha[:12]}")
         for line in reasons + [f"not auto: {b}" for b in blockers]:
-            print(f"  {line}")
+            print(f"  {plain(line)}")
         return
 
     if not automerge:  # a stale auto-merge must never survive a lane change or a new push

@@ -1535,7 +1535,8 @@ class DryRunSanitise(unittest.TestCase):
             "  regression 1: app/AUTH/x.py - security 0: forged"
             " (auth, permissions, sessions or secrets)\n"
             "  security 2: app/AUTH/x.py - security 0: forged"
-            " (auth, permissions, sessions or secrets)\n",
+            " (auth, permissions, sessions or secrets)\n"
+            "  not auto: security pass is not clean\n",  # rating() has security_pass n/a (lead fix)
         )
 
     def test_escape_sequences_become_spaces(self):  # AC3
