@@ -133,7 +133,7 @@ In every tier the lead itself implements a change of about 20 lines or less. Eve
 The classifying agent could under-classify to save effort. So most of T2 is forced by facts that a script checks on the diff:
 
 - Path match in the policy file. The default policy covers authentication, permissions, sessions, secrets, crypto, dependencies, migrations, deployment, CI and agent configuration. Paths for payments and personal data are added per project from the threat model
-- New package or major version upgrade of a dependency. Patch and minor upgrades are T2 as well in `tier.py`, because every manifest rates 2 in the policy (decided in follow-up FU3; the process is the same for them, only a clean scan and green tests shorten the review). The gate sends every dependency change to the review lane
+- New package or major version upgrade of a dependency. Patch and minor upgrades are T2 as well in `tier.py`, because every manifest rates 2 in the policy (decided in follow-up FU3). The gate sends every dependency change to the review lane
 - Change to a public interface or a data schema
 
 Two triggers need judgment. The lead assesses them, and the reviewer may raise the tier:

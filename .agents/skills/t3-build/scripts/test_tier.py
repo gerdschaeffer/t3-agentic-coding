@@ -449,6 +449,9 @@ class FU3AC3StillRefused(Base):
         "staging/\u200bx.md", "AGENTS\u202e.md", "docs/user/\u00a0ü.md", "\ufeffü.md",
         "docs/user/ü\u2028.md", "docs/user/ü\n.md", "docs/user/ü\t.md",
         "docs/../ſtaging/x.md", "./ſtaging/x.md", "ſtaging\\x.md", "ſtaging/",
+        # review round 1: a fold that creates a forbidden shape ("..", "\\", a leading "/")
+        "docs/\u2025/.github/workflows/ci.yml", "docs/\uff3cx.md", "\uff0fREADME.md",
+        "docs/\u2024\u2024/AGENTS.md", "staging\uff3cx.md",
     ]
 
     def test_fu3_ac3_cli_refuses(self):

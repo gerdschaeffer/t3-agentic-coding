@@ -34,9 +34,11 @@ def classify(paths, policy, triggers=()):
     paths, triggers = list(paths), list(triggers)
     if not paths:
         raise ValueError("no paths given")
-    # canonical except for non-ASCII: the ASCII-safe copy checks the shape, isprintable the rest.
+    # canonical except for non-ASCII: an ASCII-safe copy checks the shape, isprintable the rest.
+    # The folded forms must keep the shape too: U+2025 folds to "..", U+FF0F to "/" (spec 010).
     bad = [p for p in paths
-           if not (g.canonical(re.sub(r"[^\x00-\x7f]", "x", p)) and p.isprintable())]
+           if not all(g.canonical(re.sub(r"[^\x00-\x7f]", "x", f)) and f.isprintable()
+                      for f in (p, unicodedata.normalize("NFKC", p), unicodedata.normalize("NFKC", p).casefold()))]
     if bad:
         raise ValueError(f"not a canonical repo-relative path: {bad[0]!r}")
     unknown = [t for t in triggers if t not in TRIGGERS]
