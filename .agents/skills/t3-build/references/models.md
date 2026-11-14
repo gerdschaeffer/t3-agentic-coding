@@ -29,3 +29,25 @@ Flags (the human flips them, via a merged change):
 - `sonnet_t1_implementer`: **off**. Turn on when the replay test passes (CONCEPT 6.12, rule 5).
 - Never pass `max`, `xhigh`, `ultra` or fast modes unless the human asks.
 - Record the effort the runtime confirms. If it does not confirm one, write `default`.
+
+## Effort and skills
+
+Moved from `SKILL.md` section 1.
+
+**Effort: the model's default unless `models.md` says otherwise.** The defaults are
+tuned by the vendors and more effort costs budget without reliably better results.
+Sol's own default is low, so medium is already a step up. Raise it one step only
+when the work is truly hard (security, data loss, concurrency, a finding Sol and
+the leader dispute) and say why in the ledger. Never pass `max`, `xhigh`,
+`ultracode`, `ultrathink`, `ultra` or `fastMode: true` unless the user asks. Record
+the effort the runtime confirms in the ledger; after 5 to 10 PRs compare: did medium
+miss something that a higher setting found later? If not, medium stays.
+
+Skills: read when the stage starts and pass absolute paths in briefs (children get
+no history): `grill-me`, `technical-spec-writing`, `sol-loop`, `ponytail:ponytail`,
+`ponytail:ponytail-review` (plugin; path = `installPath` of `ponytail@ponytail` in
+`~/.claude/plugins/installed_plugins.json` + `/skills/<name>/SKILL.md`), and
+[gate/README.md](../gate/README.md) for the risk scale. `security-review` is built into
+Claude Code and has no file: tell the Claude delegate to invoke the
+`security-review` skill with its Skill tool. Anything missing: stop that stage as
+blocked and report it.
