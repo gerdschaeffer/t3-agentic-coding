@@ -29,6 +29,8 @@ made two defects reachable; this applies also with 12 or fewer reasons):
   space, so one reason is one bullet;
 - `<` becomes `&lt;`, so a reason cannot open an HTML comment or tag;
 - a reason longer than 300 characters is cut to 297 characters plus `...`;
+- order: non-printable characters first (a character is non-printable when `str.isprintable()`
+  is false, so U+00A0 counts), then the cut, then `<` becomes `&lt;` (a cut never splits an entity);
 - selection (which reasons to keep) works on the raw text; the presentation is applied to what is
   shown only.
 

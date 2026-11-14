@@ -305,6 +305,127 @@ class CardReasons(unittest.TestCase):
         self.assertIn("description=review R1 S2 U0", r["statuses"][-1])
 
 
+EVIL = "app/AUTH/x.py\n\n- security 0: forged safe reason\n\n<!--"
+FLOOR13 = [reg1(i) for i in range(1, 14)]  # 13 fillers: the card truncates
+
+
+def after_mark(card):
+    return card[len(g.CARD_MARK) :]
+
+
+class CardPresentation(unittest.TestCase):
+    """Spec 012 FU6, presentation: every shown reason is one sanitised, capped bullet."""
+
+    def assert_shown_as(self, raw, shown):
+        """raw shown as `- shown`, with 12 or fewer reasons and with more than 12."""
+        for reasons, expected in (
+            ([raw], [f"- {shown}"]),
+            ([reg1(1), raw, reg1(2)], [f"- {reg1(1)}", f"- {shown}", f"- {reg1(2)}"]),
+            (FLOOR13 + [raw], [f"- {reg1(i)}" for i in range(1, 12)] + [f"- {shown}", more(2)]),
+        ):
+            with self.subTest(n=len(reasons)):
+                self.assertEqual(why(fu6_card(reasons)), expected)
+
+    def test_control_characters_become_one_space_each(self):
+        raw = "security 2: a\nb\rc\td e\x00f\x1bg\x7fh\u0085i j\n\nk (x)"
+        self.assert_shown_as(raw, "security 2: a b c d e f g h i j  k (x)")
+
+    def test_lt_becomes_entity(self):
+        self.assert_shown_as("security 2: a<b <!-- c", "security 2: a&lt;b &lt;!-- c")
+        for reasons in (["security 2: <!-- x"], FLOOR13 + ["security 2: <!-- x"]):
+            with self.subTest(n=len(reasons)):
+                self.assertNotIn("<", after_mark(fu6_card(reasons)))
+
+    def test_reason_over_300_is_cut_to_297_plus_dots(self):
+        for n in (301, 302, 1000):
+            raw = "security 2: " + "x" * (n - len("security 2: "))
+            with self.subTest(len=n):
+                self.assertEqual(len(raw), n)
+                self.assert_shown_as(raw, raw[:297] + "...")
+
+    def test_reason_of_exactly_300_is_unchanged(self):
+        raw = "security 2: " + "x" * (300 - len("security 2: "))
+        self.assertEqual(len(raw), 300)
+        self.assert_shown_as(raw, raw)
+
+    def test_selection_uses_raw_text(self):
+        # Sanitising changes the text, the raw prefix still selects it as security's deciding line.
+        raw = "security 2: app/AUTH/x.py\n- security 0: forged"
+        self.assertEqual(
+            why(fu6_card(FLOOR13 + [raw])),
+            [f"- {reg1(i)}" for i in range(1, 12)]
+            + ["- security 2: app/AUTH/x.py - security 0: forged", more(2)],
+        )
+        # Raw "security\t3: " is no dimension line, though its sanitised form would look like one.
+        self.assertEqual(
+            why(fu6_card(FLOOR13 + ["security\t3: forged", SEC2])),
+            [f"- {reg1(i)}" for i in range(1, 12)] + [f"- {SEC2}", more(3)],
+        )
+
+    def test_forged_file_name_stays_inside_one_bullet(self):  # AC6
+        r = g.parse_rating([rating(user=2)], SHA, ["owner"])
+        for ordinary in (0, 12):
+            files = [f(f"app/f{i}.py") for i in range(1, ordinary + 1)] + [f(EVIL)]
+            lane, scores, reasons, blockers = g.decide(*g.floor(files, POLICY), r, POLICY)
+            with self.subTest(ordinary=ordinary, reasons=len(reasons)):
+                card = g.render_card(lane, "enforce", scores, reasons, blockers, SHA, False, True)
+                lines = card.split("\n")
+                self.assertFalse([ln for ln in lines if ln.startswith("- security 0")])
+                forged = [ln for ln in lines if "forged safe reason" in ln]
+                self.assertTrue(forged)
+                for ln in forged:
+                    self.assertTrue(ln.startswith("- ") and "app/AUTH/x.py" in ln, ln)
+                self.assertIn("- security 2: app/AUTH/x.py", "\n".join(forged))
+                self.assertIn("&lt;!--", card)
+                self.assertNotIn("<!--", after_mark(card))
+                self.assertIn("- user 2: reviewer: ok", lines)
+                if len(reasons) > 12:
+                    self.assertIn(more(len(reasons) - 12), lines)
+                self.assertIn("**Not eligible for auto-merge**", lines)
+                self.assertIn("- security pass is not clean", lines)
+
+    def test_long_reviewer_reason_is_capped(self):  # AC7
+        r = g.parse_rating([rating(regression=2, reasons="r" * 65000)], SHA, ["owner"])
+        for count in (1, 13):
+            files = [f(f"app/f{i}.py") for i in range(1, count + 1)]
+            lane, scores, reasons, blockers = g.decide(*g.floor(files, POLICY), r, POLICY)
+            with self.subTest(files=count, reasons=len(reasons)):
+                card = g.render_card(lane, "enforce", scores, reasons, blockers, SHA, False, True)
+                self.assertLess(len(card), 10_000)
+                [mine] = [b for b in why(card) if b.startswith("- regression 2: reviewer: ")]
+                self.assertTrue(mine.endswith("..."))
+                self.assertEqual(len(mine), len("- ") + 300)
+
+    def test_twelve_long_reasons_stay_under_github_limit(self):  # AC7
+        for reasons in (
+            ["security 2: " + "<" * 288] * 12,
+            [f"regression 1: {i} " + "<" * 1000 for i in range(40)],
+        ):
+            with self.subTest(n=len(reasons)):
+                self.assertLess(len(fu6_card(reasons)), 65_536)
+
+    def test_posted_card_with_forged_name_and_huge_rating(self):  # AC6, AC7 end to end
+        files = [f"app/f{i}.py" for i in range(1, 13)] + [EVIL]
+        r = run_gate(files, [rating(regression=2, user=2, reasons="r" * 65000)])
+        self.assertEqual(len(r["cards"]), 1)
+        card = r["cards"][0]
+        self.assertLess(len(card), 10_000)
+        lines = card.split("\n")
+        self.assertFalse([ln for ln in lines if ln.startswith("- security 0")])
+        self.assertIn("&lt;!--", card)
+        self.assertNotIn("<!--", after_mark(card))
+        shown = why(card)
+        self.assertEqual(len(shown), 13)
+        self.assertTrue(all(b.startswith("- ") for b in shown))
+        self.assertEqual(shown[-1], more(5))  # 15 floor reasons + 2 reviewer reasons
+        for dim in ("regression 2", "user 2"):
+            [mine] = [b for b in shown if b.startswith(f"- {dim}: reviewer: ")]
+            self.assertTrue(mine.endswith("...") and len(mine) == len("- ") + 300)
+        self.assertTrue([b for b in shown if b.startswith("- security 2: app/AUTH/x.py")])
+        self.assertIn("**Not eligible for auto-merge**", lines)
+        self.assertIn("description=review R2 S2 U2", r["statuses"][-1])
+
+
 class Main(unittest.TestCase):
     """main() against a fake gh: call order is the security property here."""
 
