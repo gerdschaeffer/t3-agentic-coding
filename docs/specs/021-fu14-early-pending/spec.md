@@ -55,3 +55,11 @@ The change only adds `pending` writes: it cannot turn a lane weaker or write `su
 
 Binding the required result to base and head, a merge queue or required workflows (option 4); changing
 ratings, lanes or the policy; `issue_comment` events beyond doing nothing in the new step.
+
+## Review log
+
+Sol security round 1: no code finding (shape checks in Python and bash across locales, no injection,
+cancellation does not fire `failure()`, a failure after the final status writes `pending`, which fails
+closed and is repaired by the next run). One P3 documentation finding, fixed: the README still said a
+failed first `gh pr view` leaves the old status and said "first `gh` call"; both corrected (the remaining
+exception is a run without a usable event head SHA, i.e. `issue_comment`, or a failed status write).
