@@ -16,7 +16,7 @@ this spec. MUST as in RFC 2119.
      then `verdict:`, `regression:`, `security:`, `user:`, `security_pass:` lines (format of
      `gate/README.md`). With `--sha`, the marker SHA must equal it.
    - Reply (Sol's raw final reply of the code review): the last line that starts with `VERDICT:` gives
-     `APPROVE` or `CHANGES`; the last line that starts with `RISK ` gives `regression=N security=N user=N`.
+     `APPROVE` or `CHANGES`; the last line that starts with `RISK ` gives `regression=N security=N user=N`, optionally followed by ` reasons: <text>`.
    - Security reply (optional): the last line starting with `SECURITY:` or `VERDICT:` gives `CLEAN` or
      `FINDINGS`.
    - Findings, each a line `FAIL <field>: comment <x>, Sol <y>`: the comment's verdict is `APPROVE`
@@ -54,6 +54,7 @@ this spec. MUST as in RFC 2119.
 | AC2 | Each softening exits 1 and prints its FAIL line: verdict APPROVE vs CHANGES; each of regression, security, user lower than Sol's (all three tested separately). A stricter comment (higher rating, CHANGES vs APPROVE) exits 0 with a `note` line. | tests |
 | AC3 | `security_pass: clean` with no `--security-reply`, with `FINDINGS`, or with `CLEAN`: FAIL `unverified`, FAIL, pass. `security_pass: n/a` needs no security reply. | tests |
 | AC4 | The last matching line wins in the reply (a round-1 `VERDICT: CHANGES` followed by a final `VERDICT: APPROVE`; two RISK lines); a `RISK` or `VERDICT:` text inside a longer line or an indented one does not count. CRLF input works. | tests |
+| AC4b | Real replies end the RISK line with ` reasons: <text>` (the review brief asks for it): `RISK regression=1 security=0 user=0 reasons: any text` is accepted, the reasons text is never printed, and a RISK line with a bad number or with other text after the digits (not ` reasons: `) still exits 2. Found by the lead's dry run on a real Sol reply. | tests |
 | AC5 | Exit 2 with empty stdout for: a missing file, a file over 256 KiB, a comment whose first line is not the marker, a marker SHA that is not 40 lower-case hex or differs from `--sha`, a missing or out-of-range value (`regression: 4`), a reply with no `VERDICT:` or no `RISK`. | tests |
 | AC6 | The script never prints file text beyond the fixed tokens (a reply with control characters and a long garbage line prints none of it). | test |
 | AC7 | Docs: `references/rating-audit.md` exists and names the thread-read source, the cadence, the two auditors and the list of what is not checked; `ship.md` links to it; links resolve. | text tests, link check |
