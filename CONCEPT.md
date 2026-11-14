@@ -133,7 +133,7 @@ In every tier the lead itself implements a change of about 20 lines or less. Eve
 The classifying agent could under-classify to save effort. So most of T2 is forced by facts that a script checks on the diff:
 
 - Path match in the policy file. The default policy covers authentication, permissions, sessions, secrets, crypto, dependencies, migrations, deployment, CI and agent configuration. Paths for payments and personal data are added per project from the threat model
-- New package or major version upgrade of a dependency. Patch and minor upgrades with a clean scan and green tests stay T1 in process depth. The gate still sends every dependency change to the review lane
+- New package or major version upgrade of a dependency. Patch and minor upgrades are T2 as well in `tier.py`, because every manifest rates 2 in the policy (decided in follow-up FU3). The gate sends every dependency change to the review lane
 - Change to a public interface or a data schema
 
 Two triggers need judgment. The lead assesses them, and the reviewer may raise the tier:
@@ -143,7 +143,7 @@ Two triggers need judgment. The lead assesses them, and the reviewer may raise t
 
 The path list is the policy file of the risk gate, `risk-policy.toml`. The gate rates every change to its own files as "block", so an agent cannot shrink the list.
 
-How the path floor sets the tier: a file the policy rates 2 or 3 makes the task T2. A task that touches only files on the gate's no-rating list is T0. Everything else is T1. Two exceptions: patch and minor dependency upgrades stay T1, and the policy's size rule (more than 200 changed lines) affects the lane only, because size is unknown before work.
+How the path floor sets the tier: a file the policy rates 2 or 3 makes the task T2. A task that touches only files on the gate's no-rating list is T0. Everything else is T1. One exception: the policy's size rule (more than 200 changed lines) affects the lane only, because size is unknown before work.
 
 **Guardrail files are human-owned.** CI configuration, branch protection, `AGENTS.md`, skills, the tier and path lists, sandbox and permission settings define the rules of the game. Agents propose changes to them. Only the human merges them. The risk gate enforces this for files in the repository: it rates every such change as "block".
 

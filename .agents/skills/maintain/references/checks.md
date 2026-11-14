@@ -12,9 +12,8 @@ advisory lookups send package names and versions only. No manifest for an ecosys
 - Command: the repo's outdated-dependency command. Examples: `npm outdated --json`,
   `pip list --outdated --format=json`, `cargo outdated`, `go list -u -m -json all`.
 - Output: per package: name, current version, latest version, kind (patch, minor, major).
-- Tier rule: new package or major upgrade: T2. Patch and minor upgrades: run `tier.py` on the
-  manifest and lockfile paths and report its result (CONCEPT keeps patch and minor at T1; if
-  `tier.py` says T2, report that and note the difference).
+- Tier rule: new package or major upgrade: T2. Patch and minor upgrades: run `tier.py -- <manifest and lockfile
+  paths>` and report its result (T2: every manifest rates 2 in the policy).
 
 ## 2. Advisories (daily)
 

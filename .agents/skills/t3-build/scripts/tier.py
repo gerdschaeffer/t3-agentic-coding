@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Tier a task from the paths it will touch: human, T2, T0 or T1 (spec 002-wp2-tier-step).
 
-Usage: tier.py [--policy FILE] [--trigger NAME]... PATH...
+Usage: tier.py [--policy FILE] [--trigger NAME]... -- PATH...
+Put "--" before the paths so a path starting with "-" is not read as an option.
+A non-ASCII path is tiered at least T2; guardrails also match its NFKC-casefold form (spec 010).
 Reuses the risk gate's matching, floor and no_rating check. No network, no subprocess, no writes.
 """
 
 import argparse
+import re
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 GATE = Path(__file__).resolve().parent.parent / "gate"
@@ -30,7 +34,11 @@ def classify(paths, policy, triggers=()):
     paths, triggers = list(paths), list(triggers)
     if not paths:
         raise ValueError("no paths given")
-    bad = [p for p in paths if not g.canonical(p)]
+    # canonical except for non-ASCII: an ASCII-safe copy checks the shape, isprintable the rest.
+    # The folded forms must keep the shape too: U+2025 folds to "..", U+FF0F to "/" (spec 010).
+    bad = [p for p in paths
+           if not all(g.canonical(re.sub(r"[^\x00-\x7f]", "x", f)) and f.isprintable()
+                      for f in (p, unicodedata.normalize("NFKC", p), unicodedata.normalize("NFKC", p).casefold()))]
     if bad:
         raise ValueError(f"not a canonical repo-relative path: {bad[0]!r}")
     unknown = [t for t in triggers if t not in TRIGGERS]
@@ -40,7 +48,9 @@ def classify(paths, policy, triggers=()):
     exempt = all([
         g.exempt_from_rating([{"path": p, "additions": 1, "deletions": 0}], policy) for p in paths
     ])
-    human = [p for p in paths if any(g.matches(p.lower(), x.lower()) for x in GUARDRAIL)]
+    human = [p for p in paths
+             if any(g.matches(f, x.lower()) for x in GUARDRAIL
+                    for f in (p.lower(), unicodedata.normalize("NFKC", p).casefold()))]
     if human:
         return "human", [f"guardrail file: {p}" for p in human]
     high = []
@@ -50,8 +60,9 @@ def classify(paths, policy, triggers=()):
             if max(scores.values()) >= 2:
                 high.append(f"floor {max(scores.values())}: {p} ({'; '.join(why)})")
                 break
-    if high or triggers:
-        return "T2", high + [f"trigger: {t}" for t in triggers]
+    wide = [f"non-ASCII path: {p}" for p in paths if not p.isascii()]
+    if high or triggers or wide:
+        return "T2", high + [f"trigger: {t}" for t in triggers] + wide
     if exempt:
         return "T0", ["all files on no_rating list"]
     return "T1", ["default: ordinary files: " + ", ".join(paths)]

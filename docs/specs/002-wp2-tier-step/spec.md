@@ -139,3 +139,9 @@ Spec: lead (this file). Tests: test-author (Sonnet, medium). `tier.py`: implemen
 medium). Code review: reviewer (Sol, medium), security-weighted brief. `SKILL.md` and references:
 lead (documentation chore). No separate spec review and no second-vendor security pass: the
 PLAN stage table lists neither, and the change has no I/O beyond reading one policy file.
+
+## Amendment (FU3, spec 010)
+
+Non-ASCII names are no longer refused: they are tiered at least T2, and guardrail matching also
+runs on the NFKC-casefold form (2.4 and the `café.md` row of AC5 change accordingly). The patch and
+minor dependency exception stays a non-goal and is now a decision (T2). Calls put `--` before paths.

@@ -101,7 +101,7 @@ or paths, payments, data-losing migrations, new dependencies, CI/deploy config.
 The core loop. A project runs it once per milestone (section 5).
 
 1. **Tier.** Before anything else, list the paths the task will touch (both names of a
-   rename) and run, from the repo root, `python3 <skill dir>/scripts/tier.py [--trigger NAME]... PATH...`; add
+   rename) and run, from the repo root, `python3 <skill dir>/scripts/tier.py [--trigger NAME]... -- PATH...`; add
    `--trigger concurrency` or `--trigger untrusted-input` when you judge they apply,
    and `dependency`, `interface`, `schema` when the task adds a package or major
    upgrade, changes a public interface or a data schema. Line 1 is the tier:

@@ -9,7 +9,7 @@ who merges. Tier and lane are independent.
 Run, from the repo root, with every path the task will touch (both names of a rename):
 
 ```
-python3 <skill>/scripts/tier.py [--policy FILE] [--trigger NAME]... PATH...
+python3 <skill>/scripts/tier.py [--policy FILE] [--trigger NAME]... -- PATH...
 ```
 
 Line 1 of the output is the tier; the lines below name the paths or triggers that decided it.
@@ -41,10 +41,13 @@ Tier step with the new tier.
 ## What `tier.py` does not do
 
 - It ignores size: the policy's size rule (over 200 changed lines) changes the lane only.
-- Every dependency manifest rates 2 in the policy, so a patch or minor upgrade is also T2 here.
-  The CONCEPT exception (T1 for patch and minor upgrades) is not implemented; the gate sends
-  every dependency change to the review lane anyway.
-- It refuses non-canonical and non-ASCII names (exit 2). Tier those by hand; when unsure take T2.
+- Every dependency manifest rates 2 in the policy, so a patch or minor upgrade is also T2 (a
+  decision, CONCEPT agrees); the gate sends every dependency change to the review lane anyway.
+- It refuses non-canonical names (exit 2): absolute, `./`, `..`, `//`, backslash, control or
+  unprintable characters. Put `--` before the paths so a name starting with `-` is a path.
+- A non-ASCII name is tiered at least T2, never T0 or T1, and a name that Unicode folds to a
+  guardrail path (for example `ſtaging/x`) is `human`. A lookalike that no fold maps (Cyrillic
+  letters) is only T2, not `human`: look at such names yourself.
 - It trusts the policy file it reads. A `--policy` other than the repo's is for tests and
   projects that keep the gate elsewhere.
 - Guardrail patterns live in `tier.py` (`GUARDRAIL`); a test compares them with the gate's

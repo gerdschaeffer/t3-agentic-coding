@@ -65,7 +65,7 @@ Header: check, date, `main` SHA, each command with its exit code. A check that c
 
 ## Tier and route
 
-- Tier comes from `../t3-build/scripts/tier.py <paths the fix touches>`; report what it says.
+- Tier comes from `../t3-build/scripts/tier.py -- <paths the fix touches>`; report what it says.
   A judgment trigger (concurrency, untrusted input) may raise it, never lower it.
 - `tier.py` result `human` (a guardrail file such as `AGENTS.md` or a skill): route to the lead
   as a proposal for a human-reviewed change; the human merges. Never a direct fix.
