@@ -1,0 +1,32 @@
+name: agents-drift
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: agents-drift-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  agents-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Pin to a full commit SHA before the first run (see README.md).
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Run the guard from the base commit, never the PR's copy (spec 015 section 7).
+      - env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+          listed="$(git ls-tree --name-only "$BASE_SHA" -- .github/ci/check_agents.py)"
+          if [ -z "$listed" ]; then
+            echo "::notice::guards not installed on the base commit"
+          else
+            git show "$BASE_SHA:.github/ci/check_agents.py" > "$RUNNER_TEMP/check_agents.py"
+            python3 "$RUNNER_TEMP/check_agents.py" --root . --models .agents/skills/t3-build/references/models.md
+          fi
