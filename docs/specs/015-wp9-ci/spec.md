@@ -419,3 +419,18 @@ Where the spec left a detail open, the frozen tests decide it. The ones that mat
   most 203 characters ending in `...`.
 - **Copy table:** `test_check_trailers.py` and `test_diff_guard.py` import helpers from earlier
   test files, so the three script test files are copied to `.github/ci/` together.
+
+## 17. Security round 1 (Sol, reviewer-security): findings and required changes
+
+Six findings, all accepted (a security finding is fixed or escalated, never declined). New ACs:
+
+| AC | Requirement | Evidence |
+|---|---|---|
+| AC21 | **No lazy fetch, no inherited git behaviour.** `run_git` builds the child environment from the parent's by dropping every variable that starts with `GIT_` and then setting `GIT_TERMINAL_PROMPT=0`, `GIT_NO_LAZY_FETCH=1` and `GIT_OPTIONAL_LOCKS=0`. A fixture repo with `extensions.partialClone=origin`, `remote.origin.promisor=true`, `remote.origin.url=ssh://example.invalid/r` and `core.sshCommand=<marker script>`, with a needed object removed (a tree for `diff_guard`, a parent commit for `check_trailers`), never runs the marker script; the script exits 2 with a message. In the three workflow templates the guard step has `GIT_NO_LAZY_FETCH: "1"` in its `env:` (the preflight, `ls-tree` and `show` commands run in a PR checkout too). | tests |
+| AC22 | **Pathspec variables.** With `GIT_LITERAL_PATHSPECS=1`, `GIT_GLOB_PATHSPECS=1`, `GIT_NOGLOB_PATHSPECS=1` or `GIT_ICASE_PATHSPECS=1` set in the parent environment, `diff_guard` still fails on a removed assertion in `tests/test_[x]*.py` (and on a path with glob characters). | tests |
+| AC23 | **Models file is read like an agent file.** `check_agents.py` opens `--models` with `O_NOFOLLOW | O_NONBLOCK`, requires a regular file (`fstat`), reads at most `MAX_MODELS_BYTES = 1_000_000` (more: `too large`, exit 1... as an input over a bound; unreadable or not regular or a symlink: exit 2 with empty stdout). A symlink, a FIFO (no hang: returns within a few seconds) and a 1,000,001-byte regular file are each rejected; a normal file passes. | tests |
+| AC24 | **Front-matter keys.** In Claude and OpenCode front matter a top-level key must match `^[A-Za-z_][A-Za-z0-9_-]*$`; any other key syntax (quoted keys, keys with control characters or a NUL, keys with spaces) makes the file unparsable (exit 1, one line). `"model": evil` after `model: expected` is rejected as unparsable, not accepted. Duplicate detection is exact-match on the key. | tests |
+| AC25 | **Process group.** `run_git` starts git with `start_new_session=True` and, on timeout or output overflow, kills the whole process group (`os.killpg(..., SIGKILL)`) and reaps git. A stub git that spawns a child (`sleep`) and then stalls or floods leaves no descendant alive after the call (checked with the child's pid written by the stub). | tests |
+| AC26 | **Message size and NUL.** `check_trailers` obtains each commit's message from the raw commit object (`git cat-file commit <sha>`, bounded by `MAX_BYTES`; the message is the part after the first empty line), not from `%B`. A message that contains a NUL byte fails the commit (`message contains NUL`); the 64 KB limit applies to the raw message bytes. `git log` is used only for the list of shas (`--format=%H`). A commit made with `git hash-object --literally` whose message is `Agent: ... \nTier: T2\n\0` followed by 70,000 bytes fails. | tests |
+
+The three scripts keep every earlier AC. Where an existing test pins `%B` or the exact `log` format, the frozen test wins and the implementer reports the conflict instead of changing it.
