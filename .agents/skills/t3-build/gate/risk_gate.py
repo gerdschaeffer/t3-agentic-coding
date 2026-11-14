@@ -12,6 +12,7 @@ only and never executes PR code.
 
 import json
 import os
+import re
 import subprocess
 import tomllib
 from datetime import datetime
@@ -203,6 +204,27 @@ def in_merge_hours(policy, now=None):
     return start <= now.hour < end
 
 
+CARD_REASONS = 12
+
+
+def card_reasons(reasons):
+    """Up to CARD_REASONS reasons, keeping each dimension's first highest-level reason."""
+    if len(reasons) <= CARD_REASONS:
+        return [f"- {r}" for r in reasons]
+    best = {}
+    for i, r in enumerate(reasons):
+        m = re.match(rf"({'|'.join(DIMS)}) (\d+): ", r)
+        if m and (m[1] not in best or int(m[2]) > best[m[1]][0]):
+            best[m[1]] = (int(m[2]), i)
+    keep = {i for _, i in best.values()}
+    for i in range(len(reasons)):
+        if len(keep) == CARD_REASONS:
+            break
+        keep.add(i)
+    shown = [f"- {reasons[i]}" for i in sorted(keep)]
+    return shown + [f"- ... and {len(reasons) - len(keep)} more (run the gate's dry run for the full list)"]
+
+
 def render_card(lane, mode, scores, reasons, blockers, sha, live, hours_ok):
     title = lane if mode == "enforce" else f"shadow, would be {lane}"
     user = f"{scores['user']}" + ("" if live else " (not live, ignored)")
@@ -217,7 +239,7 @@ def render_card(lane, mode, scores, reasons, blockers, sha, live, hours_ok):
         f"Head `{sha[:12]}`. Lane = highest rating: 0-1 auto, 2 review by the owner, 3 block.",
     ]
     if reasons:
-        lines += ["", "**Why**"] + [f"- {r}" for r in reasons[:12]]
+        lines += ["", "**Why**"] + card_reasons(reasons)
     if blockers:
         lines += ["", "**Not eligible for auto-merge**"] + [f"- {b}" for b in blockers]
     if lane == "auto" and mode == "enforce" and not hours_ok:
