@@ -207,10 +207,18 @@ def in_merge_hours(policy, now=None):
 CARD_REASONS = 12
 
 
+def show_reason(r):
+    """One bullet per reason, no HTML: non-printables to spaces, cut at 300, then escape '<'."""
+    r = "".join(c if c.isprintable() else " " for c in r)
+    if len(r) > 300:
+        r = r[:297] + "..."
+    return "- " + r.replace("<", "&lt;")
+
+
 def card_reasons(reasons):
     """Up to CARD_REASONS reasons, keeping each dimension's first highest-level reason."""
     if len(reasons) <= CARD_REASONS:
-        return [f"- {r}" for r in reasons]
+        return [show_reason(r) for r in reasons]
     best = {}
     for i, r in enumerate(reasons):
         m = re.match(rf"({'|'.join(DIMS)}) (\d+): ", r)
@@ -221,7 +229,7 @@ def card_reasons(reasons):
         if len(keep) == CARD_REASONS:
             break
         keep.add(i)
-    shown = [f"- {reasons[i]}" for i in sorted(keep)]
+    shown = [show_reason(reasons[i]) for i in sorted(keep)]
     return shown + [f"- ... and {len(reasons) - len(keep)} more (run the gate's dry run for the full list)"]
 
 
