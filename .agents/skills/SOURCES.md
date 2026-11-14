@@ -11,4 +11,4 @@ Copied 2026-11-13. Third-party skills are a supply chain: read before updating, 
 
 Not copied on purpose: `t3-agentic-coding` (superseded, leader on a third party), `full-send`/`full-stop` (let the agent merge), `t3-coding-ninox` (Claude-only variant, copy it if code may not leave Anthropic).
 
-Still to write (PLAN.md): `release`, `maintain`, `milestone-audit`, and the t3-build changes.
+Written in this repo (no external source): `release`, `maintain`, `milestone-audit`, and the t3-build changes of PLAN.md WP2 to WP9.

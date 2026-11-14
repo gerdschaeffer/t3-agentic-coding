@@ -4,15 +4,38 @@ Turns [CONCEPT.md](CONCEPT.md) into a working team. Sources: section 7 "What is 
 
 ## State now
 
+As of `origin/main` `86fdb09` (pull request 26). WP1 to WP9 and the follow-ups FU1 to FU14 are merged, each reviewed by Sol with tests written first by a separate agent. Open: WP0 (human), WP10 and WP11 (need a product repository and the human). Handover and the human-only list: [docs/HANDOVER.md](docs/HANDOVER.md).
+
 | Done | Where |
 |---|---|
-| Skills copied, pinned | `.agents/skills/` (`SOURCES.md`): t3-build with gate, sol-loop, grill-me, technical-spec-writing, file-pr, babysit-pr, leaving-pr-comments, takeover, modernize, council, ponytail, ponytail-review |
-| 16 Claude agents | `staging/claude/agents/` |
-| 2 Codex agents, 2 OpenCode agents | `staging/codex/agents/`, `staging/opencode/agents/` |
-| Models and efforts, commit trailers | `.agents/skills/t3-build/references/{models,commit-trailers}.md` |
+| Skills copied, pinned, plus the new skills `release`, `milestone-audit`, `maintain` | `.agents/skills/` (`SOURCES.md`) |
+| t3-build: tier step, T0 path, role table, sections, `references/`, `scripts/` (tier, event log, retro report, CI guards) | `.agents/skills/t3-build/` |
+| Risk gate with `no_rating` list, `.opencode/` and `.cursor/` block rules, retarget re-run, auto-merge only into the default branch, early `pending` | `.agents/skills/t3-build/gate/` |
+| CI templates and guard scripts (`ci`, `diff-guard`, `commit-trailers`, `agents-drift`) | `.agents/skills/t3-build/ci/`, `scripts/` |
+| 16 Claude agents, 2 Codex agents, 2 OpenCode agents (20 files, match `models.md`) | `staging/` |
+| Specs 001 to 021 | `docs/specs/` |
 | `AGENTS.md`, `CLAUDE.md` | root |
 
-Agents sit in `staging/` because `.claude/`, `.codex/` and `.opencode/` are guardrail folders: agents may not write them (the sandbox enforces it for `.claude/`). The human installs them (WP0).
+Agents sit in `staging/` because `.claude/`, `.codex/` and `.opencode/` are guardrail folders: agents may not write them (the sandbox enforces it for `.claude/`). The human installs them (WP0). The installed `security-engineer.md` may still name `claude-fable-5-2`; `models.md` says `claude-opus-5-5`.
+
+### Work package status
+
+| WP | Status | Pull request |
+|---|---|---|
+| WP0 install, accounts | open, human | n/a |
+| WP1 gate changes | merged | 1 |
+| WP2 tier step | merged | 2 |
+| WP3 event log | merged | 3 (hardening FU2: 10) |
+| WP4 skill sections | merged | 4 (restructure FU4: 11) |
+| WP5 release skill | merged | 5 |
+| WP6 milestone-audit | merged | 6 |
+| WP7 maintain | merged | 7 |
+| WP8 retro report | merged | 8 (FU11 squash count: 23, FU12 per-lane metric: 24) |
+| WP9 CI templates and guards | merged | 17 (FU9 branch filter: 18) |
+| WP10 pilot slice | open, needs a product repository | n/a |
+| WP11 schedule, enforce, replay | open, human decides | n/a |
+
+Follow-ups merged: FU1 untrack pycache (9), FU3 tier hardening (12), FU5 gate block rules (13), FU6 and FU7 risk card (14, 15), FU8 dry-run sanitising (16), FU10 gate retarget (21), FU13 auto-merge base (25), FU14 early pending (26), `security-engineer` on Opus (19, 22), bulk worker narrowed in CONCEPT.md (20).
 
 ## Rules for the implementing agent
 
