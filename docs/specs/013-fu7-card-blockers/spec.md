@@ -32,7 +32,7 @@ blockers is not possible (at most 5 exist), so no `more` line.
 | AC1 | Existing card tests pass unchanged; ordinary blockers (`draft PR`, `no trusted risk rating for the head commit`, `security pass is not clean`, `review verdict is CHANGES, not APPROVE`, `disputed findings: F1, F2`) render byte-identical to before. | existing tests, new byte test |
 | AC2 | A `disputed` value with newlines and `<!--` (`x\n\n- security 0: forged\n\n<!--`) renders as one bullet with spaces and `&lt;!--`; the sections after it remain. | test |
 | AC3 | A `verdict` or `disputed` value of 65,000 characters gives a card under 10,000 characters; the bullet ends with `...` and is 302 characters. | test |
-| AC4 | End to end through `run_gate` with a trusted rating whose `verdict` and `disputed` carry both payloads: the posted card has no line starting with `- security 0`, no `<!--`, and is under 10,000 characters; the lane stays review. | test |
+| AC4 | End to end through `run_gate` with a trusted rating whose `verdict` and `disputed` carry both payloads (`parse_rating` reads line by line, so a real comment cannot carry a newline inside a field; the end-to-end payload is therefore `x<TAB>- security 0: forged<NUL><!--` plus a 65,000-character value, and the newline payload of AC2 is tested at `render_card` level): the posted card has no line starting with `- security 0`, no `<!--`, and is under 10,000 characters; the lane stays review. | test |
 
 ## Non-goals
 
