@@ -33,6 +33,7 @@ WEEK_HITS = 3         # rule 4 limit hits in one ISO week
 
 TS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 REVERT = re.compile(r"^This reverts commit ([0-9a-f]{40})\b", re.M)
+SQUASH = re.compile(r" \(#\d+\)$")  # squash-merge subject suffix
 TIERS = ("T0", "T1", "T2")
 
 
@@ -111,10 +112,17 @@ def is_worktree(path):
 
 
 def read_git(path):
-    """All commits on HEAD as dicts (sha, date, subject, agent, tier, reverts) and the first-parent shas."""
+    """All commits on HEAD as dicts (sha, date, subject, agent, tier, reverts) and the first-parent shas.
+
+    A commit is a merged pull request ("pr") when its subject starts `Merge pull request #` (merge commit),
+    or when its subject ends ` (#<n>)` and it is a non-merge commit (at most one parent) on the first-parent
+    line (squash, or a rebase merge that kept the suffix). Limits: a rebase merge without the suffix is not
+    counted; a direct main-line commit whose subject ends `(#<n>)` is counted (GitHub's convention, accepted);
+    a side commit of a merge-commit PR is not on the first-parent line and is not counted.
+    """
     # Agent:/Tier: sit in their own paragraph before Co-Authored-By: (references/commit-trailers.md), which
     # git's trailer parser ignores, so the lines are read from the message body.
-    fmt = "%H%x1f%cs%x1f%s%x1f%B"
+    fmt = "%H%x1f%P%x1f%cs%x1f%s%x1f%B"  # %P before the body: it cannot hold \x1f
     try:
         # --no-show-signature: a hostile repo config (log.showSignature, gpg.program) must not run a program
         out = git(path, "log", "-z", "--no-show-signature", f"--format={fmt}", "HEAD")
@@ -125,10 +133,13 @@ def read_git(path):
     for rec in out.split("\0"):
         if not rec.strip():
             continue
-        sha, cdate, subject, body = rec.split("\x1f", 3)
+        sha, parents, cdate, subject, body = rec.split("\x1f", 4)
+        sha = sha.strip()
+        # a non-merge commit (the root has no parent) on the first-parent line
+        squash = bool(SQUASH.search(subject)) and sha in first and len(parents.split()) < 2
         tier = re.search(r"^Tier: *(\S+)", body, re.M)
         tier = tier.group(1) if tier else ""
-        commits.append({"sha": sha.strip(), "date": cdate, "pr": subject.startswith("Merge pull request #"),
+        commits.append({"sha": sha, "date": cdate, "pr": subject.startswith("Merge pull request #") or squash,
                         "agent": bool(re.search(r"^Agent: ", body, re.M)),
                         "tier": tier if tier in TIERS else "unknown",
                         "has_tier": bool(tier), "reverts": REVERT.findall(body)})
