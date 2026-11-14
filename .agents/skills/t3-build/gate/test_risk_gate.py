@@ -2326,3 +2326,62 @@ class FoldKeepsLower(unittest.TestCase):
             with self.subTest(path=file["path"]):
                 exact, low = g.rate_files([file], POLICY, fold=False)[0], lower_rated(file)
                 self.assertEqual(g.floor([file], POLICY)[0], {d: max(exact[d], low[d]) for d in g.DIMS})
+
+
+# Spec 022 item 6, AC12 (Sol security round 3): collisions count under both keyings, and an added
+# non-ASCII path is always a case collision (no keying lists every alias a filesystem applies).
+
+import unicodedata  # noqa: E402
+
+LOWER_ONLY = ("tests/test_H\u0302\u0331.py", "tests/test_h\u0302\u0331.py")  # same lower(), NFKC differs
+FOLD_ONLY = ("tests/test_\ufb01le.py", "tests/test_file.py")  # fi ligature: lower() differs, NFKC equal
+
+
+def nfkc_fold(s):
+    return unicodedata.normalize("NFKC", s).casefold()
+
+
+class CollisionBothKeyings(unittest.TestCase):
+    assert_lane = CaseCollision.assert_lane  # borrowed, not inherited: the frozen tests run once
+
+    def test_lower_only_collision_is_review(self):  # AC12
+        new, other = LOWER_ONLY
+        self.assertEqual(new.lower(), other.lower(), "fixture: lower() keys equal")
+        self.assertNotEqual(nfkc_fold(new), nfkc_fold(other), "fixture: NFKC-casefold keys differ")
+        out = self.assert_lane([added(new)], tree("README.md", other, new), "review R2")
+        self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
+
+    def test_fold_only_collision_is_review(self):  # AC12, guard: the NFKC keying still counts
+        new, other = FOLD_ONLY
+        self.assertNotEqual(new.lower(), other.lower(), "fixture: lower() keys differ")
+        self.assertEqual(nfkc_fold(new), nfkc_fold(other), "fixture: NFKC-casefold keys equal")
+        out = self.assert_lane([added(new)], tree("README.md", other, new), "review R2")
+        self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
+
+    def test_added_non_ascii_test_without_collision_is_review(self):  # AC12
+        new = "tests/t\u00e9st.py"
+        paths = ("README.md", "tests/test_x.py", new)
+        self.assertEqual([p for p in paths if new.lower() == p.lower() or nfkc_fold(new) == nfkc_fold(p)],
+                         [new], "fixture: no colliding path under either keying")
+        out = self.assert_lane([added(new)], tree(*paths), "review R2")
+        self.assertIn(f"  regression 2: {new} (changes an existing file: tests)", out.splitlines())
+
+    def test_added_ascii_test_stays_auto(self):  # AC12, guard: non-ASCII tree paths flag no ASCII file
+        new = "tests/test_new.py"
+        self.assert_lane([added(new)], tree("README.md", new, "tests/t\u00e9st.py", LOWER_ONLY[1]), "auto R0")
+
+    def test_non_ascii_status_only_matters_to_existing_changed(self):  # AC12
+        for new, ascii_twin, want in (
+            ("docs/user/caf\u00e9.md", "docs/user/cafe.md", "auto R0"),
+            ("src/auth/caf\u00e9.py", "src/auth/cafe.py", "review R1 S2"),
+        ):
+            with self.subTest(path=new):
+                out = self.assert_lane([added(new)], tree("README.md", new), want)
+                twin = self.assert_lane([added(ascii_twin)], tree("README.md", ascii_twin), want)
+                self.assertEqual(out, twin.replace(ascii_twin, new))
+                self.assertNotIn("changes an existing file", out)
+
+    def test_modified_non_ascii_test_is_review(self):  # AC12, guard: as before
+        path = "tests/t\u00e9st.py"
+        out = self.assert_lane([{"filename": path, "status": "modified"}], tree("README.md", path), "review R2")
+        self.assertIn(f"  regression 2: {path} (changes an existing file: tests)", out.splitlines())
