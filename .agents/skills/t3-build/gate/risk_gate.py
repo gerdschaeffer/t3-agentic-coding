@@ -46,8 +46,16 @@ def rate_files(files, policy, fold=False):
 
     fold lowercases paths and patterns: a case-insensitive checkout treats claude.md as CLAUDE.md.
     """
+    return _score(_found(files, policy, fold))
+
+
+def floor(files, policy):
+    """The gate's floor: per dimension the higher of the exact and the case-folded pass."""
+    return _score(_found(files, policy, False) + _found(files, policy, True))
+
+
+def _found(files, policy, fold):
     key = str.lower if fold else (lambda s: s)
-    scores = dict.fromkeys(DIMS, 0)
     found = []  # (dim, level, text)
     if len(files) >= MAX_FILES:
         found.append(("regression", 3, f"{len(files)} files: too large to rate, split the PR"))
@@ -77,6 +85,11 @@ def rate_files(files, policy, fold=False):
                             f"{path} (only removes lines: {why})",
                         )
                     )
+    return found
+
+
+def _score(found):
+    scores = dict.fromkeys(DIMS, 0)
     for dim, level, _ in found:
         scores[dim] = max(scores[dim], level)
     reasons = list(
@@ -299,7 +312,7 @@ def main():
         author = json.loads(gh("pr", "view", pr, "--repo", repo, "--json", "author"))
         exempt = (author.get("author") or {}).get("login") in trusted
     lane, scores, reasons, blockers = decide(
-        *rate_files(files, policy), rating, policy, pr_info["isDraft"], exempt=exempt
+        *floor(files, policy), rating, policy, pr_info["isDraft"], exempt=exempt
     )
     method = policy.get("merge", {}).get("method", "squash")
     if method not in ("squash", "merge", "rebase"):

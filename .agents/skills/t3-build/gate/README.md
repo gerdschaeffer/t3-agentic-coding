@@ -127,7 +127,7 @@ that has the list; they are not covered by the dated decision above):
 - A veto comment that misses the exact marker (first line, full head SHA) does
   not stop an exempt PR, and the workflow does not re-run on it: convert the PR
   to draft or close it.
-- The case check lowercases rule patterns. A character range that spans cases
+- The case check (the exemption and the floor) lowercases rule patterns. A character range that spans cases
   (`[A-_]`) is not folded correctly; write such patterns without it.
 
 ## Setup per repository
@@ -157,7 +157,10 @@ that has the list; they are not covered by the dated decision above):
    `risk-policy.toml` (between `# BEGIN TEMPLATE payments-personal-data` and
    `# END TEMPLATE payments-personal-data`) from the threat model and uncomment it.
 
-Agent config under `.opencode/` blocks like `.claude/` and `.codex/`. The tests
+Agent config under `.opencode/` and `.cursor/`, and `opencode.json`, `opencode.jsonc`,
+`.cursorrules` or `.cursorignore` in any directory, block like `.claude/` and `.codex/`. The gate's floor is case-folded for every path:
+the larger of the exact and the lowercased rating counts, so `.Claude/x` and `Opencode.JSON`
+block too. A case variant never rates lower than the exact name. The tests
 `test_shipped_no_rating_list_is_minimal` and
 `test_payments_template_is_inert_and_valid_when_uncommented` check the policy as
 shipped; a project that customises the policy adapts them. The README test is

@@ -776,9 +776,11 @@ class Amendment(unittest.TestCase):
             "docs/user/agents.md": (ZERO, []),
             ".OpenCode/x.md": (ZERO, []),
             "src/Claude.md": (ZERO, []),
+            # FU5 (spec 011): `*/opencode.json` now matches the file name itself, so this was
+            # regression 1 ("ordinary code") before and is the agent-config block rule now.
             ".OpenCode/opencode.json": (
-                {**ZERO, "regression": 1},
-                ["regression 1: .OpenCode/opencode.json (ordinary code)"],
+                {**ZERO, "regression": 3},
+                ["regression 3: .OpenCode/opencode.json (CI, deploy, gate or agent config)"],
             ),
         }
         for path, want in before.items():
@@ -791,8 +793,10 @@ class Amendment(unittest.TestCase):
             with self.subTest(path=path, lane="rated, as today"):
                 self.assertEqual(lane([f(path)], [rating()])[0], "auto")
                 self.assertEqual(nr_lane([f(path)], [rating()])[0], "auto")
+        # FU5 (spec 011): main rates with the case-folded floor, so a case variant of an agent
+        # instruction file is block there. The unfolded rate_files above stays as it was.
         r = run_gate(["docs/user/Claude.md"], [rating()])
-        self.assertIn("description=auto R0 S0 U0", r["statuses"][-1])
+        self.assertIn("description=block R3 S0 U0", r["statuses"][-1])
         self.assertEqual(r["lookups"], [])
         # Existing fixtures: default and explicit fold=False agree, scores and reasons.
         fixtures = [
@@ -1001,6 +1005,138 @@ class AmendmentRound2(unittest.TestCase):
         except Exception:
             exempt = False  # raising fails closed too
         self.assertIs(exempt, False)
+
+
+# FU5 (docs/specs/011-fu5-gate-block-rules/spec.md): opencode.json, .cursor/, case-folded floor.
+
+AGENT_RULE = "CI, deploy, gate or agent config"
+# Round 1 review added the legacy Cursor files: instructions and the access ignore list.
+FU5_PATTERNS = ("*/opencode.json", "*/opencode.jsonc", "*/.cursor/*", "*/.cursorrules", "*/.cursorignore")
+FU5_PATHS = ("opencode.json", "opencode.jsonc", "sub/opencode.json", ".cursor/rules/x.mdc",
+             ".cursor/mcp.json", ".cursorrules", "sub/.cursorrules", ".cursorignore")
+FU5_CASE_VARIANTS = (  # (variant, original)
+    (".OpenCode/x", ".opencode/x"),
+    (".Claude/settings.json", ".claude/settings.json"),
+    (".AGENTS/skills/x/SKILL.md", ".agents/skills/x/SKILL.md"),
+    (".Codex/x", ".codex/x"),
+    ("Opencode.JSON", "opencode.json"),
+    (".CURSOR/rules/x.mdc", ".cursor/rules/x.mdc"),
+    ("CLAUDE.MD", "CLAUDE.md"),
+    ("docs/Agents.md", "docs/AGENTS.md"),
+    (".GitHub/workflows/ci.yml", ".github/workflows/ci.yml"),
+)
+NEVER_LOWER = ("app/views.py", "README.md", "docs/x.md", "tests/test_x.py", "README.MD",
+               "Docs/x.py", "Tests/x.py", "app/Auth/x.py", "package.json", "PACKAGE.JSON")
+
+
+def agent_rule(policy=POLICY):
+    return next(r for r in policy["rule"] if r.get("reason") == AGENT_RULE)
+
+
+def floor_lane(files, comments=()):
+    r = g.parse_rating(list(comments), SHA, ["owner"])
+    return g.decide(*g.floor(files, POLICY), r, POLICY)
+
+
+class FoldedFloor(unittest.TestCase):
+    def assertFloorShape(self, files):
+        """floor = per-dimension max of both passes; each reason is a pass reason at that level."""
+        scores, reasons = g.floor(files, POLICY)
+        plain, folded = g.rate_files(files, POLICY), g.rate_files(files, POLICY, fold=True)
+        self.assertEqual(scores, {d: max(plain[0][d], folded[0][d]) for d in g.DIMS})
+        self.assertEqual(len(reasons), len(set(reasons)), "reasons deduplicated")
+        for line in reasons:
+            self.assertIn(line, plain[1] + folded[1])
+            dim, level = line.split(":")[0].split()
+            self.assertEqual(int(level), scores[dim], f"lower level shown: {line}")
+        for dim in g.DIMS:
+            if scores[dim]:
+                self.assertTrue(any(r.startswith(f"{dim} {scores[dim]}: ") for r in reasons), dim)
+        return scores, reasons
+
+    def test_opencode_and_cursor_config_block(self):  # AC1
+        for pattern in FU5_PATTERNS:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, agent_rule()["paths"])
+        before = {**POLICY, "rule": [
+            {**r, "paths": [p for p in r["paths"] if p not in FU5_PATTERNS]} for r in POLICY["rule"]
+        ]}
+        for path in FU5_PATHS:
+            with self.subTest(path=path):
+                self.assertEqual(g.rate_files([f(path)], before)[0]["regression"], 1, "fixture")
+                scores, reasons = self.assertFloorShape([f(path)])
+                self.assertEqual(scores["regression"], 3)
+                self.assertIn(f"regression 3: {path} ({AGENT_RULE})", reasons)
+                for comments in ([rating()], []):
+                    self.assertEqual(floor_lane([f(path)], comments)[0], "block")
+
+    def test_case_variants_rate_like_the_original(self):  # AC2
+        for variant, original in FU5_CASE_VARIANTS:
+            with self.subTest(path=variant):
+                scores, reasons = self.assertFloorShape([f(variant)])
+                self.assertEqual(scores, g.floor([f(original)], POLICY)[0])
+                self.assertEqual(scores["regression"], 3)
+                self.assertIn(f"regression 3: {variant} ({AGENT_RULE})", reasons)
+                self.assertEqual(floor_lane([f(variant)], [rating()])[0], "block")
+
+    def test_floor_never_lowers_a_score(self):  # AC3
+        for path in NEVER_LOWER:
+            with self.subTest(path=path):
+                scores, _ = self.assertFloorShape([f(path)])
+                plain = g.rate_files([f(path)], POLICY)[0]
+                for dim in g.DIMS:
+                    self.assertGreaterEqual(scores[dim], plain[dim], dim)
+        self.assertEqual(g.floor([f("README.MD")], POLICY)[0]["regression"], 1)
+        self.assertEqual(g.floor([f("PACKAGE.JSON")], POLICY)[0]["security"], 2)
+        self.assertEqual(g.floor([f("app/Auth/x.py")], POLICY)[0]["security"], 2)
+        whole = [f(p) for p in NEVER_LOWER] + [f("tests/test_y.py", add=0, rem=3)]
+        self.assertFloorShape(whole)
+
+    def test_reasons_name_only_the_deciding_level(self):  # AC4
+        cases = {
+            # plain pass says "regression 1 (ordinary code)": a lower level, not shown
+            "Opencode.JSON": [f"regression 3: Opencode.JSON ({AGENT_RULE})"],
+            "PACKAGE.JSON": [
+                "regression 2: PACKAGE.JSON (dependency change)",
+                "security 2: PACKAGE.JSON (dependency change)",
+            ],
+            "CLAUDE.md": [f"regression 3: CLAUDE.md ({AGENT_RULE})"],  # both passes: once
+            ".CURSOR/rules/x.mdc": [f"regression 3: .CURSOR/rules/x.mdc ({AGENT_RULE})"],
+        }
+        for path, want in cases.items():
+            with self.subTest(path=path):
+                self.assertCountEqual(self.assertFloorShape([f(path)])[1], want)
+        big = [f("app/a.py", add=POLICY["limits"]["small_diff_lines"] + 1)]
+        limit = POLICY["limits"]["small_diff_lines"]
+        self.assertEqual(
+            self.assertFloorShape(big)[1], [f"regression 2: {limit + 1} changed lines (limit {limit})"]
+        )
+
+    def test_renames_are_rated_under_both_names(self):  # AC4
+        for path, previous, why in (
+            ("archive/ci.txt", ".GitHub/workflows/ci.yml", ".GitHub/workflows/ci.yml"),
+            ("app/x.py", "Opencode.json", "Opencode.json"),
+            (".Cursor/rules/x.mdc", "app/x.py", ".Cursor/rules/x.mdc"),
+        ):
+            with self.subTest(path=path, previous=previous):
+                scores, reasons = self.assertFloorShape([moved(path, previous)])
+                self.assertEqual(scores["regression"], 3)
+                self.assertIn(f"regression 3: {why} ({AGENT_RULE})", reasons)
+
+
+class FoldedFloorMain(unittest.TestCase):
+    def test_main_blocks_case_variants_and_new_agent_config(self):  # AC5, AC1
+        for path in (".Claude/x", "opencode.json", ".cursor/mcp.json"):
+            for comments in ([rating()], []):
+                with self.subTest(path=path, rated=bool(comments)):
+                    dry = run_gate([path], comments, env={"RISK_GATE_DRY_RUN": "1"})
+                    self.assertTrue(dry["out"].startswith("block R3"), dry["out"])
+                    self.assertIn(f"  regression 3: {path} ({AGENT_RULE})\n", dry["out"])
+                    self.assertEqual((dry["statuses"], dry["merges"], dry["cards"]), ([], [], []))
+                    r = run_gate([path], comments)
+                    self.assertIn("state=failure", r["statuses"][-1])
+                    self.assertIn("description=block R3 S0 U0", r["statuses"][-1])
+                    self.assertFalse(any("--auto" in m for m in r["merges"]))
 
 
 if __name__ == "__main__":
