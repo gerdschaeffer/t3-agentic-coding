@@ -23,7 +23,7 @@ here: stacked PRs are merged by the human, and the stack bottom lands in the def
    branch (<allowed>)` (printed through `show_reason`/`plain` like the other texts). The lane is then
    `review` (never `auto`), in every mode, so shadow cards and the leader's dry run show it too. The
    scores and the reasons are unchanged; `block` stays `block`.
-4. Fail closed: if `baseRefName` or the default branch cannot be read or is empty, the run ends with
+4. Fail closed: if `baseRefName` or the default branch cannot be read, is empty, or is the literal `null` (what `--jq` prints for a missing key), the run ends with
    `SystemExit` (the status stays pending, nothing is merged or armed), like other `gh` failures.
 5. Everything else is unchanged: the exemption path (T0, no rating) is subject to the same rule; a
    stale auto-merge is still disarmed whenever the lane is not auto (existing logic).
