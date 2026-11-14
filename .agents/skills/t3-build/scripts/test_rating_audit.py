@@ -348,5 +348,66 @@ class AC4bReasons(Base):
                 self.usage_error(self.audit(comment(), self.rp(risk)), risk)
 
 
+def _gate():
+    gate_dir = str((HERE / ".." / "gate").resolve())
+    if gate_dir not in sys.path:
+        sys.path.insert(0, gate_dir)
+    import risk_gate
+    return risk_gate
+
+
+class AC8ReadLikeTheGate(Base):
+    """The audit reads the comment as risk_gate.parse_rating does (spec AC8)."""
+
+    @staticmethod
+    def with_reg(line, tail=""):
+        """A comment whose regression line is `line`; `tail` is appended after the other fields."""
+        return (f"<!-- risk-rating sha={SHA} -->\nverdict: APPROVE\n{line}\nsecurity: 0\nuser: 0\n"
+                f"security_pass: n/a\ndisputed: none\nreasons: fine\n{tail}")
+
+    @property
+    def texts(self):
+        return {
+            "last wins": self.with_reg("regression: 2", "regression: 0\n"),
+            "capital R": self.with_reg("Regression: 0"),
+            "trailing spaces": self.with_reg("regression: 0  "),
+            "no space": self.with_reg("regression:0"),
+        }
+
+    def test_ac8_last_occurrence_wins(self):
+        r = self.audit(self.texts["last wins"], reply(reg=2))
+        self.fails(r, r"^FAIL regression: comment 0, Sol 2$")
+
+    def test_ac8_gate_formatting_variants_are_read_as_0(self):
+        # today: exit 2 (the regex finds no regression line), must be exit 1 with the FAIL line
+        for name in ("capital R", "trailing spaces", "no space"):
+            with self.subTest(variant=name):
+                r = self.audit(self.texts[name], reply(reg=2))
+                self.fails(r, r"^FAIL regression: comment 0, Sol 2$")
+
+    def test_ac8_audit_agrees_with_the_gate(self):
+        gate = _gate()
+        for name, text in self.texts.items():
+            with self.subTest(variant=name):
+                rating = gate.parse_rating([{"login": "a", "body": text}], SHA, ["a"])
+                self.assertIsNotNone(rating)
+                self.assertEqual(rating["regression"], 0)
+                # Sol says 2: the audit must report the gate's value (0) as a FAIL
+                self.fails(self.audit(text, reply(reg=2)), r"^FAIL regression: comment 0, Sol 2$")
+                # Sol says 0: the audit must agree with the gate, so no FAIL
+                self.ok(self.audit(text, reply(reg=0)))
+
+    def test_ac8_guard_normal_formatting_exits_0(self):
+        self.ok(self.audit(comment(), reply()))
+
+    def test_ac8_guard_bad_or_missing_fields_exit_2(self):
+        missing = comment().replace("regression: 1\n", "")
+        for label, text in {"regression 4": comment(reg=4), "missing": missing,
+                            "verdict lower-case": comment().replace("verdict: APPROVE", "verdict: approve"),
+                            "security_pass maybe": comment(sp="maybe")}.items():
+            with self.subTest(case=label):
+                self.usage_error(self.audit(text, reply()), label)
+
+
 if __name__ == "__main__":
     unittest.main()
