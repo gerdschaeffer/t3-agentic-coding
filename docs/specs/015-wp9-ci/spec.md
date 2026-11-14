@@ -396,3 +396,26 @@ Sol round 2 (CHANGES, one blocker and two shoulds, finding 1 supported by the by
 instead of `subprocess.run` (section 3), and AC20 for the byte bound, the kill and the timeout.
 
 Sol round 3 (CHANGES, two shoulds on AC20): applied (helper-level test of `run_git`, `check_agents` excluded). The spec review budget (3 rounds for T2) is used; no further round.
+
+## 16. Conventions the tests fix (confirmed by the lead; the implementer follows the tests)
+
+Where the spec left a detail open, the frozen tests decide it. The ones that matter:
+
+- **Templates:** job ids equal the required check names (`diff-guard`, `commit-trailers`,
+  `agents-drift`; in `ci.yml` the jobs `check`, `guard-tests`, `ci`). Workflow names are distinct.
+  `concurrency` is top-level. `github.token`, `secrets: inherit` and `inputs` are banned; the word
+  `secrets.` is banned even in comments. In a guard job's run text `.github/ci/` appears only
+  after `-- ` or `:` (in the `ls-tree` and `show` lines), never as a command to run. Script
+  arguments are exactly those of section 7. Guard branches are shell `if`/`else` (no step-level
+  `if:`); the `ci` job reads the `needs` results through `env:`. The step emulator of the tests runs
+  bash only and allows the expressions base sha, head sha, `head_ref`, `matrix.target` and
+  `needs.<job>.result`.
+- **`check_agents`:** `<rel path>` in a problem line is relative to the checked folder root or
+  shorter (the tests accept any leading folder). A symlinked file may also give a second line.
+  `main(argv=None)` is required; `run_git` and constants are read at call time.
+- **`diff_guard`:** a rename to a non-test name names the old path; a new symlink or gitlink on a test
+  path fails; whether the old side of a test file was text is decided from the blob content, not
+  from `numstat` alone (a `-diff` attribute must not hide removed assertions); a printed value is at
+  most 203 characters ending in `...`.
+- **Copy table:** `test_check_trailers.py` and `test_diff_guard.py` import helpers from earlier
+  test files, so the three script test files are copied to `.github/ci/` together.
