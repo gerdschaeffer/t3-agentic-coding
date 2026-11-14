@@ -49,8 +49,8 @@ Not done in this run: the file is outside the files this run was allowed to chan
 The skill needs, for CLEAN, all four scanner classes (secret, dependency, static analysis, licence)
 as files in `scans/<sha>/` with their exit codes (stage 5). This repository defines no command for
 any of them (no Makefile). A scanner-free path does not exist: an audit of this repo would end
-`FINDINGS` (area `process`: missing evidence) by design, and the dry run was not started. The first
-real audit therefore needs a product repo with the eight Makefile targets of `ci/README.md`.
+`FINDINGS` (area `process`: missing evidence) by design, and the dry run was not started. A real audit needs
+repo-defined commands for all four scanner classes and their recorded results.
 
 ## What was not done
 
