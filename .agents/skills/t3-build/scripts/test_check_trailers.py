@@ -1048,5 +1048,133 @@ class TestSecurityRound1AC26RawMessage(Base):
             self.assertIn(["cat-file", "commit", sha], calls, f"no `cat-file commit {sha}` call")
 
 
+# ---------------------------------------------------------------- security round 2 (spec section 18)
+# Shared with test_diff_guard.py (imported there): SIGTERM and kill-order helpers.
+
+import signal  # noqa: E402
+
+
+def read_pid(path):
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def sigterm_case(test, driver, script, args):
+    """AC28: the script (via `driver`, GIT = a stalling group_stub) gets SIGTERM while git and git's
+    child sleep. Returns (returncode, stdout, stderr) after asserting both are dead within 3 s."""
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    pidfile, childfile = test.tmp / "stub.pid", test.tmp / "child.pid"
+    stub = group_stub(test.tmp / "git-sigterm", pidfile, childfile, "stall")
+    # GIT_TIMEOUT 30: only the signal can end the run inside the test's window.
+    p = subprocess.Popen([sys.executable, "-c", driver, str(script), str(stub), "100000", "30", *map(str, args)],
+                         cwd=str(test.cwd), env=test.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    test.addCleanup(lambda: p.poll() is None and (p.kill(), p.wait()))
+    end = time.monotonic() + 20
+    while (read_pid(pidfile) is None or read_pid(childfile) is None) and time.monotonic() < end and p.poll() is None:
+        time.sleep(0.05)
+    pid, child = read_pid(pidfile), read_pid(childfile)
+    test.assertTrue(pid and child, f"the stub never started its child (script exit {p.poll()})")
+    test.addCleanup(kill_quietly, pid)
+    test.addCleanup(kill_quietly, child)
+    test.assertIsNone(p.poll(), "fixture: the script ended before the signal")
+    t0 = time.monotonic()
+    p.send_signal(signal.SIGTERM)
+    try:
+        out, err = p.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        test.fail("the script did not exit within 10 s of SIGTERM")
+    test.assertTrue(pid_dead(pid, grace=max(0.0, t0 + 3 - time.monotonic())),
+                    "git (stub) still alive 3 s after SIGTERM to the script: run_git cleanup did not run")
+    test.assertTrue(pid_dead(child, grace=max(0.0, t0 + 3 - time.monotonic())),
+                    "git's child still alive 3 s after SIGTERM to the script: the process group was not killed")
+    test.assertIn(p.returncode, (143, 2), f"exit {p.returncode}; stdout={out!r}; stderr={err[-500:]!r}")
+    return p.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+def sigterm_not_at_import(test, script, name):
+    """AC28: importing the module leaves the SIGTERM handler alone; the docstring states the SIGKILL limit."""
+    before = signal.getsignal(signal.SIGTERM)
+    try:
+        m = load_module(test, script, name)
+        test.assertIs(signal.getsignal(signal.SIGTERM), before, "the SIGTERM handler is installed at import")
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    test.assertIn("SIGKILL", m.__doc__ or "", "the module docstring does not state the SIGKILL limit")
+
+
+def kill_order_case(test, script, name, mode, args):
+    """AC29: run_git with os.killpg and Popen.poll/wait recorded; the group kill comes before any
+    poll or wait on git's Popen. Returns (raised, stdout)."""
+    m = load_module(test, script, name)
+    pidfile, childfile = test.tmp / "stub.pid", test.tmp / "child.pid"
+    stub = group_stub(test.tmp / f"git-order-{mode}", pidfile, childfile, mode)
+    records, real_killpg, real_popen = [], os.killpg, subprocess.Popen
+
+    def killpg(pgid, sig):
+        records.append(("killpg", pgid, sig))
+        return real_killpg(pgid, sig)
+
+    class Recording(real_popen):
+        def poll(self):
+            records.append(("poll", self.pid))
+            return super().poll()
+
+        def wait(self, timeout=None):
+            records.append(("wait", self.pid))
+            return super().wait(timeout)
+
+    with mock.patch.object(m.os, "killpg", killpg), mock.patch.object(m.subprocess, "Popen", Recording):
+        result, raised, took, out, _ = call_run_git(m, stub, args, test.tmp, timeout=2)
+    test.assertTrue(read_pid(pidfile) and read_pid(childfile), "the stub never started its child")
+    pid, child = read_pid(pidfile), read_pid(childfile)
+    test.addCleanup(kill_quietly, pid)
+    test.addCleanup(kill_quietly, child)
+    test.assertIsNotNone(raised, f"run_git returned {result!r} instead of failing")
+    test.assertLess(took, 10)
+    kills = [i for i, r in enumerate(records) if r[0] == "killpg"]
+    test.assertTrue(kills, f"os.killpg was never called: {records}")
+    test.assertEqual(records[kills[0]][1:], (pid, signal.SIGKILL), f"wrong killpg call: {records}")
+    reaps = [i for i, r in enumerate(records) if r[0] in ("poll", "wait") and r[1] == pid]
+    test.assertFalse([i for i in reaps if i < kills[0]], f"poll/wait on git before os.killpg: {records}")
+    test.assertTrue([i for i in reaps if i > kills[0] and records[i][0] == "wait"],
+                    f"git is not waited for after the kill: {records}")
+    test.assertTrue(pid_dead(pid), "git (stub) still alive or a zombie after run_git")
+    test.assertTrue(pid_dead(child), "git's child still alive after run_git")
+    return raised, out
+
+
+class TestSecurityRound2AC28Sigterm(Base):
+    """AC28: check_trailers installs a SIGTERM handler in main that raises, so run_git's cleanup
+    kills git's process group; the script exits 143 or 2."""
+
+    def test_sigterm_kills_git_and_its_child(self):
+        sigterm_case(self, DRIVER, SCRIPT, ["--branch", "agent/x", "--base", "main", "--head", "HEAD",
+                                            "--repo", self.tmp])
+
+    def test_handler_not_installed_at_import(self):
+        sigterm_not_at_import(self, SCRIPT, "check_trailers_round2_import")
+
+
+class TestSecurityRound2AC29KillBeforeReap(Base):
+    """AC29: on timeout and overflow run_git calls os.killpg(pgid, SIGKILL) before any poll/wait."""
+
+    def test_timeout_kills_first(self):
+        raised, out = kill_order_case(self, SCRIPT, "check_trailers_round2_order_stall", "stall",
+                                      ["log", "--format=%H"])
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 2)
+            self.assertEqual(out, "")
+
+    def test_overflow_kills_first(self):
+        raised, out = kill_order_case(self, SCRIPT, "check_trailers_round2_order_flood", "flood",
+                                      ["log", "--format=%H"])
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 1)
+            self.assertIn("too large", out)
+
+
 if __name__ == "__main__":
     unittest.main()

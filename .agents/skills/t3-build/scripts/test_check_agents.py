@@ -740,5 +740,94 @@ class TestSecurityRound1AC24FrontMatterKeys(Base):
         self.problems(self.check(r), rf"{P}claude/agents/alpha\.md: unparsable \(.+\)")
 
 
+# ---------------------------------------------------------------- security round 2 (spec section 18)
+
+class TestSecurityRound2AC27ModelsParents(Base):
+    """AC27: a --models inside --root has no symlink in any component below --root (exit 2, empty
+    stdout); a --models outside --root only has its leaf checked, so symlinked ancestors pass."""
+
+    def elsewhere(self, name="elsewhere"):
+        d = self.tmp / name
+        d.mkdir()
+        (d / "models.md").write_text(MODELS)
+        return d
+
+    def both_forms(self, root, models):
+        """(label, cwd, --root, --models): relative to tmp, and absolute."""
+        return (("relative", self.tmp, root.relative_to(self.tmp), models.relative_to(self.tmp)),
+                ("absolute", self.cwd, root, models))
+
+    def test_symlinked_folder_below_root_exit_2(self):
+        root, target = self.root(), self.elsewhere()
+        self.clean(self.check(root, target / "models.md"))  # fixture: the target is a valid models file
+        (root / "refs").symlink_to(target, target_is_directory=True)
+        for label, cwd, r, models in self.both_forms(root, root / "refs" / "models.md"):
+            with self.subTest(form=label):
+                self.usage_error(self.run_ca("--root", r, "--models", models, cwd=cwd), f"{label} root/refs link")
+
+    def test_nested_symlinked_folder_below_root_exit_2(self):
+        root, target = self.root(), self.elsewhere()
+        (root / "docs").mkdir()
+        (root / "docs" / "refs").symlink_to(target, target_is_directory=True)
+        for label, cwd, r, models in self.both_forms(root, root / "docs" / "refs" / "models.md"):
+            with self.subTest(form=label):
+                self.usage_error(self.run_ca("--root", r, "--models", models, cwd=cwd),
+                                 f"{label} root/docs/refs link")
+
+    def test_symlink_inside_root_to_a_folder_inside_root_exit_2(self):
+        root = self.root()
+        (root / "real-refs").mkdir()
+        (root / "real-refs" / "models.md").write_text(MODELS)
+        (root / "refs").symlink_to(root / "real-refs", target_is_directory=True)
+        for label, cwd, r, models in self.both_forms(root, root / "refs" / "models.md"):
+            with self.subTest(form=label):
+                self.usage_error(self.run_ca("--root", r, "--models", models, cwd=cwd), f"{label} in-root link")
+
+    def test_models_file_inside_root_passes(self):
+        root = self.root()
+        (root / "refs" / "deep").mkdir(parents=True)
+        for rel in ("models.md", "refs/models.md", "refs/deep/models.md"):
+            (root / rel).write_text(MODELS)
+            for label, cwd, r, models in self.both_forms(root, root / rel):
+                with self.subTest(models=rel, form=label):
+                    self.clean(self.run_ca("--root", r, "--models", models, cwd=cwd))
+
+    def test_models_outside_root_under_symlinked_parent_passes(self):
+        root, real = self.root(), self.elsewhere("real-parent")
+        link = self.tmp / "linked-parent"
+        link.symlink_to(real, target_is_directory=True)
+        self.clean(self.check(root, link / "models.md"))
+        self.clean(self.run_ca("--root", root.relative_to(self.tmp), "--models", "linked-parent/models.md",
+                               cwd=self.tmp))
+
+    def test_root_under_symlinked_parent_with_models_inside_passes(self):
+        # Ancestors of --root are not components below it.
+        real = self.tmp / "real-parent"
+        real.mkdir()
+        root = self.root()
+        root.rename(real / "root")
+        link = self.tmp / "linked-parent"
+        link.symlink_to(real, target_is_directory=True)
+        (real / "root" / "refs").mkdir()
+        (real / "root" / "refs" / "models.md").write_text(MODELS)
+        self.clean(self.run_ca("--root", link / "root", "--models", link / "root" / "refs" / "models.md"))
+
+    def test_default_models_path_under_symlinked_ancestors_passes(self):
+        # The default path (<script dir>/../references/models.md) lies outside --root; the copy of the
+        # script is started through a symlinked ancestor, as on a runner with /tmp or /var links.
+        real = self.tmp / "real-skill"
+        (real / "scripts").mkdir(parents=True)
+        (real / "references").mkdir()
+        shutil.copy(SCRIPT, real / "scripts" / SCRIPT.name)
+        (real / "references" / "models.md").write_text(MODELS)
+        link = self.tmp / "linked-skill"
+        link.symlink_to(real, target_is_directory=True)
+        root = self.root()
+        cp = subprocess.run([sys.executable, str(link / "scripts" / SCRIPT.name), "--root", str(root)],
+                            cwd=str(self.cwd), env=self.env(), capture_output=True, text=True, errors="replace",
+                            timeout=120)
+        self.clean(cp)
+
+
 if __name__ == "__main__":
     unittest.main()

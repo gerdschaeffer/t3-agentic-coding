@@ -1324,5 +1324,37 @@ class TestSecurityRound1AC25ProcessGroup(Base):
             self.assertIn("too large", out)
 
 
+# ---------------------------------------------------------------- security round 2 (spec section 18)
+
+from test_check_trailers import kill_order_case, sigterm_case, sigterm_not_at_import  # noqa: E402
+
+
+class TestSecurityRound2AC28Sigterm(Base):
+    """AC28: diff_guard installs a SIGTERM handler in main that raises, so run_git's cleanup
+    kills git's process group; the script exits 143 or 2."""
+
+    def test_sigterm_kills_git_and_its_child(self):
+        sigterm_case(self, DRIVER, SCRIPT, ["--base", "main", "--head", "HEAD", "--repo", self.tmp])
+
+    def test_handler_not_installed_at_import(self):
+        sigterm_not_at_import(self, SCRIPT, "diff_guard_round2_import")
+
+
+class TestSecurityRound2AC29KillBeforeReap(Base):
+    """AC29: on timeout and overflow run_git calls os.killpg(pgid, SIGKILL) before any poll/wait."""
+
+    def test_timeout_kills_first(self):
+        raised, out = kill_order_case(self, SCRIPT, "diff_guard_round2_order_stall", "stall", ["diff", "--raw"])
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 2)
+            self.assertEqual(out, "")
+
+    def test_overflow_kills_first(self):
+        raised, out = kill_order_case(self, SCRIPT, "diff_guard_round2_order_flood", "flood", ["diff", "--raw"])
+        if isinstance(raised, SystemExit):
+            self.assertEqual(raised.code, 1)
+            self.assertIn("too large", out)
+
+
 if __name__ == "__main__":
     unittest.main()
