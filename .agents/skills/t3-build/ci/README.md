@@ -55,16 +55,21 @@ policy, so read those changes too.
 Check runs are keyed by head SHA and name. Two pull requests with the same head SHA share them, and
 the newest run counts. A head that is opened against an old branch that predates the guards gets
 green runs (`guards not installed on the base commit`); the same head against `main` then shows
-those green runs. Without a branch filter anyone who can open a pull request can do this against
-any existing branch that predates the guards, and right after installation that is every other
-branch. This reaches `ci` as well as the three guards, so the auto lane depends on it.
+those green runs. This reaches `ci` as well as the three guards, so the auto lane depends on it.
 
-Mitigation, in the product repo's copies (not in the templates here, whose tests forbid a filter):
-add `branches: [main]` under `pull_request:` in the four workflows. After that only someone who can
-push a base branch can do it. The full fix is a repository ruleset with required workflows pinned
-to a ref, or a gate that verifies where each required check run came from (the API field that lists
-pull requests on a run is not reliable for this). Neither is part of these templates. Also note:
-`gate/risk-gate.yml` does not re-run when a pull request is retargeted.
+The four templates therefore carry `branches: [main]` under `pull_request:`. Replace `main` by the
+default branch of the repo in all four files; a repo whose default branch has another name gets no
+run at all until then, which is visible. Add other protected branches to the list on purpose. A pull
+request against a branch that is not in the list starts none of these workflows, so a required check
+stays pending and the pull request cannot merge (fail closed). This closes the variant where anyone
+who can open a pull request uses an old branch as the base.
+
+What stays: someone who can push a base branch (an agent with push access, for example) can still
+push a base whose workflow files differ, and the check runs are shared by SHA. The full fix is a
+repository ruleset with required workflows pinned to a ref, or a gate that verifies where each
+required check run came from (the API field that lists pull requests on a run is not reliable for
+this). Neither is part of these templates. Also note: `gate/risk-gate.yml` does not re-run when a
+pull request is retargeted.
 
 ## Secrets
 
