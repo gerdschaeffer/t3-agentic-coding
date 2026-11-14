@@ -14,14 +14,17 @@ printed value goes through plain().
 import argparse
 import os
 import re
+import stat
 import sys
 import tomllib
 from pathlib import Path
 
 MAX_AGENT_FILES = 200  # per folder
 MAX_AGENT_BYTES = 64 * 1024  # per file
+MAX_MODELS_BYTES = 1_000_000
 FRONT_LINES = 100  # the closing --- must come within this many lines
 HEADER = "| Agent file | Role | Provider | Model | Effort |"
+KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")  # a top-level front-matter key
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}")
 SEPARATOR = re.compile(r":?-+:?")
@@ -41,9 +44,19 @@ def plain(value):
 
 
 def load_rows(path):
-    """{(folder, agent): (provider, model, effort)} from the first table with HEADER."""
+    """{(folder, agent): (provider, model, effort)} from the first table with HEADER; None when too large.
+
+    Opened like an agent file: no symlink, no wait on a FIFO, a regular file only, a bounded read.
+    """
     try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise Usage("models file is not a regular file")
+            data = f.read(MAX_MODELS_BYTES + 1)
+        if len(data) > MAX_MODELS_BYTES:
+            return None
+        lines = data.decode("utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         raise Usage("cannot read models file")
     starts = [i for i, l in enumerate(lines) if l.strip() == HEADER]
@@ -89,7 +102,8 @@ def front_matter(text):
         key, sep, value = line.partition(":")
         if not sep:
             return None, "line without key"
-        key = key.strip()
+        if not KEY.fullmatch(key):
+            return None, "bad key"
         if key in keys:
             return None, "duplicate key"
         keys[key] = value.strip()
@@ -209,7 +223,11 @@ def main(argv=None):
             return 1
         if not root.is_dir():
             raise Usage("--root is not a folder")
-        problems, checked = check(root, load_rows(args.models))
+        rows = load_rows(args.models)
+        if rows is None:
+            print(f"too large: models file over {MAX_MODELS_BYTES}")
+            return 1
+        problems, checked = check(root, rows)
     except Usage as e:
         print(f"check_agents: {e}", file=sys.stderr)
         return 2

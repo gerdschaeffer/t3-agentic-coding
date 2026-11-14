@@ -20,6 +20,7 @@ jobs:
       - env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GIT_NO_LAZY_FETCH: "1"
           BRANCH: ${{ github.head_ref }}
         run: |
           git cat-file -e "$BASE_SHA^{commit}"

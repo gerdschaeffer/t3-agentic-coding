@@ -23,6 +23,7 @@ import argparse
 import os
 import re
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -74,12 +75,15 @@ def too_large(what, limit):
 def run_git(args, repo):
     """The only place that starts git: bounded output (MAX_BYTES) and time (GIT_TIMEOUT)."""
     argv = [GIT, "-C", repo, *GIT_FLAGS, *args]
+    # No inherited git behaviour (GIT_DIR, pathspec modes, config, ...) and no lazy fetch from a promisor.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
     try:
         p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                             env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+                             env=env, start_new_session=True)
     except OSError:
         die("cannot run git")
-    deadline, out = time.monotonic() + GIT_TIMEOUT, bytearray()
+    deadline, out, code = time.monotonic() + GIT_TIMEOUT, bytearray(), None
     try:
         fd = p.stdout.fileno()
         while True:
@@ -99,8 +103,11 @@ def run_git(args, repo):
         except subprocess.TimeoutExpired:
             die("git timed out")
     finally:
-        if p.poll() is None:
-            p.kill()
+        if p.poll() is None or code is None:  # timeout or overflow: git and everything it started
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
             p.wait()
         p.stdout.close()
     if code:

@@ -5,7 +5,8 @@ Usage: check_trailers.py --branch NAME --base REV --head REV [--repo DIR]
 
 A branch whose lowercased name does not start with agent/ is skipped without running git. Every
 non-merge commit in BASE..HEAD must have, in any paragraph, a line matching AGENT_LINE and a line
-matching TIER_LINE. Messages are read as lines, never through git's trailer parser.
+matching TIER_LINE. Messages are read from the raw commit object (`git cat-file commit`) as lines,
+never through git's trailer parser; a message over MAX_MESSAGE bytes or with a NUL fails.
 Exit 0: pass. Exit 1: a failing commit, or input over a bound. Exit 2: bad arguments, not a
 repository, an unknown revision, or a git timeout (stdout empty, message on stderr).
 
@@ -18,6 +19,7 @@ import argparse
 import os
 import re
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -55,12 +57,15 @@ def too_large(what, limit):
 def run_git(args, repo):
     """The only place that starts git: bounded output (MAX_BYTES) and time (GIT_TIMEOUT)."""
     argv = [GIT, "-C", repo, *GIT_FLAGS, *args]
+    # No inherited git behaviour (GIT_DIR, pathspec modes, config, ...) and no lazy fetch from a promisor.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_OPTIONAL_LOCKS="0")
     try:
         p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                             env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+                             env=env, start_new_session=True)
     except OSError:
         die("cannot run git")
-    deadline, out = time.monotonic() + GIT_TIMEOUT, bytearray()
+    deadline, out, code = time.monotonic() + GIT_TIMEOUT, bytearray(), None
     try:
         fd = p.stdout.fileno()
         while True:
@@ -80,8 +85,11 @@ def run_git(args, repo):
         except subprocess.TimeoutExpired:
             die("git timed out")
     finally:
-        if p.poll() is None:
-            p.kill()
+        if p.poll() is None or code is None:  # timeout or overflow: git and everything it started
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
             p.wait()
         p.stdout.close()
     if code:
@@ -93,6 +101,8 @@ def missing(message):
     """None when the message passes, else the failure text."""
     if len(message) > MAX_MESSAGE:
         return "message too large"
+    if b"\0" in message:
+        return "message contains NUL"
     lines = [l[:MAX_LINE] for l in message.decode("utf-8", "replace").replace("\r", "").split("\n")]
     agent = any(AGENT_LINE.match(l) for l in lines)
     tier = any(TIER_LINE.match(l) for l in lines)
@@ -115,22 +125,22 @@ def main(argv=None):
         print("trailers: not an agent branch, skipped")
         return 0
     out = run_git(["log", "-z", "--no-show-signature", "--no-merges", f"--max-count={MAX_COMMITS + 1}",
-                   "--format=%H%x1f%B", f"{args.base}..{args.head}", "--"], args.repo)
-    records = [r for r in out.split(b"\0") if r]
-    if len(records) > MAX_COMMITS:
+                   "--format=%H", f"{args.base}..{args.head}", "--"], args.repo)
+    shas = [s.decode("ascii", "replace") for s in out.split(b"\0") if s]
+    if len(shas) > MAX_COMMITS:
         too_large("commits", MAX_COMMITS)
     failures = []
-    for record in records:
-        sha, sep, message = record.partition(b"\x1f")
-        sha = sha.decode("ascii", "replace")
-        if not sep or not SHA.fullmatch(sha):
+    for sha in shas:
+        if not SHA.fullmatch(sha):
             die("unexpected git log output")
+        # The raw object, not %B: %B stops at a NUL and re-encodes, so the limit would miss bytes.
+        message = run_git(["cat-file", "commit", sha], args.repo).partition(b"\n\n")[2]
         reason = missing(message)
         if reason:
             failures.append(f"{plain(sha[:12])}: {reason}")
     for f in failures:
         print(f)
-    print(f"trailers: {len(records)} commits checked, {len(failures)} failing")
+    print(f"trailers: {len(shas)} commits checked, {len(failures)} failing")
     return 1 if failures else 0
 
 
