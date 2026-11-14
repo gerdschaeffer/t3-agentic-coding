@@ -7,7 +7,7 @@ Folders: for each of claude, codex, opencode, <root>/.<p>/agents or else <root>/
 Exit 0: every agent file matches its row. Exit 1: drift, or input over a bound. Exit 2: bad
 arguments, an unreadable or malformed models.md, an unknown provider, both folder forms present,
 or no provider folder at all (stdout empty, message on stderr).
-Reads files only. Symlinks are problems, never followed. File contents are never printed; every
+Reads files only. Symlinks are problems, never followed, --root included. File contents are never printed; every
 printed value goes through plain().
 """
 
@@ -204,6 +204,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         root = Path(args.root)
+        if root.is_symlink():  # never followed, like every other symlink
+            print(f"{plain(root)}: not a regular folder")
+            return 1
         if not root.is_dir():
             raise Usage("--root is not a folder")
         problems, checked = check(root, load_rows(args.models))

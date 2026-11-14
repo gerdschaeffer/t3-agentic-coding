@@ -164,21 +164,17 @@ def count(diff):
 
 
 def shrink(repo, mb, head, old_sha, new_sha, old, new):
-    """None, "type" (text became binary) or (removed, added) for a text-to-text change."""
-    def diff(*extra):
-        return run_git(["diff", "-U0", "-M", *DIFF_FLAGS, *extra, mb, head, "--",
-                        ":(literal)" + old, ":(literal)" + new], repo)
+    """None, "type" (text became binary) or (removed, added) for a text-to-text change.
 
-    out = diff()
-    header = out.split(b"\n@@", 1)[0]
-    if any(l.startswith(b"Binary files ") for l in header.split(b"\n")):
-        # git calls it binary, maybe through a -diff attribute: decide from the blobs themselves.
-        if is_binary(run_git(["cat-file", "blob", old_sha], repo)):
-            return None
-        if is_binary(run_git(["cat-file", "blob", new_sha], repo)):
-            return "type"
-        out = diff("--text")
-    return count(out)
+    Binary is decided from the blobs, never from the patch (a `diff` attribute hides "Binary files").
+    A blob over MAX_BYTES fails the run as too large (run_git's bound).
+    """
+    if is_binary(run_git(["cat-file", "blob", old_sha], repo)):
+        return None
+    if is_binary(run_git(["cat-file", "blob", new_sha], repo)):
+        return "type"
+    return count(run_git(["diff", "-U0", "-M", "--text", *DIFF_FLAGS, mb, head, "--",
+                          ":(literal)" + old, ":(literal)" + new], repo))
 
 
 def main(argv=None):
