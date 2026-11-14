@@ -172,6 +172,139 @@ class Card(unittest.TestCase):
         self.assertEqual(card, g.render_card(*args))
 
 
+ORD = "ordinary code"
+SEC2 = "security 2: app/AUTH/x.py (auth, permissions, sessions or secrets)"
+
+
+def reg1(i):
+    return f"regression 1: app/f{i}.py ({ORD})"
+
+
+def more(n):
+    return f"- ... and {n} more (run the gate's dry run for the full list)"
+
+
+def fu6_card(reasons, scores=None, blockers=(), lane="review", mode="enforce", hours_ok=True):
+    scores = scores or {"regression": 1, "security": 2, "user": 0}
+    return g.render_card(lane, mode, scores, list(reasons), list(blockers), SHA, False, hours_ok)
+
+
+def why(card):
+    """The bullets of the **Why** section."""
+    lines = card.split("\n")
+    start = lines.index("**Why**") + 1
+    end = lines.index("", start) if "" in lines[start:] else len(lines)
+    return lines[start:end]
+
+
+class CardReasons(unittest.TestCase):
+    """Spec 012 FU6: with more than 12 reasons the card keeps each dimension's deciding reason."""
+
+    def test_exactly_12_reasons_is_the_old_card_byte_for_byte(self):  # AC1
+        reasons = [reg1(i) for i in range(1, 12)] + [SEC2]
+        expected = "\n".join(
+            [
+                g.CARD_MARK,
+                "### Risk gate: **review**",
+                "",
+                "| Regression | Security | User impact |",
+                "|---|---|---|",
+                "| 1 | 2 | 0 (not live, ignored) |",
+                "",
+                f"Head `{SHA[:12]}`. Lane = highest rating: 0-1 auto, 2 review by the owner, 3 block.",
+                "",
+                "**Why**",
+            ]
+            + [f"- {r}" for r in reasons]
+        )
+        self.assertEqual(fu6_card(reasons), expected)
+
+    def test_security_reason_after_13_floor_lines_is_shown(self):  # AC2
+        reasons = [reg1(i) for i in range(1, 14)] + [SEC2]
+        scores = {"regression": 1, "security": 2, "user": 0}
+        card = fu6_card(reasons, scores=dict(scores))
+        self.assertEqual(
+            why(card), [f"- {reg1(i)}" for i in range(1, 12)] + [f"- {SEC2}", more(2)]
+        )
+        self.assertIn("| 1 | 2 | 0 (not live, ignored) |", card.split("\n"))
+
+    def test_highest_level_of_every_dimension_is_shown(self):  # AC3
+        reviewer = "regression 3: reviewer: risky refactor of the scheduler"
+        user2 = "user 2: app/ui/form.tsx (user-facing screens)"
+        reasons = (
+            [reg1(i) for i in range(1, 9)]
+            + [f"security 1: app/s{i}.py (logging)" for i in range(1, 5)]
+            + [f"user 1: app/u{i}.py (copy)" for i in range(1, 5)]
+            + [SEC2, user2, reviewer]
+        )
+        card = fu6_card(reasons, scores={"regression": 3, "security": 2, "user": 2}, lane="block")
+        shown = why(card)
+        for line in (SEC2, user2, reviewer):
+            self.assertIn(f"- {line}", shown)
+        self.assertEqual(
+            shown,
+            [f"- {reg1(i)}" for i in range(1, 9)]
+            + ["- security 1: app/s1.py (logging)", f"- {SEC2}", f"- {user2}", f"- {reviewer}"]
+            + [more(7)],
+        )
+
+    def test_tie_keeps_the_first_line_of_the_highest_level(self):  # AC3, spec step 1
+        other = "security 2: app/session.py (auth, permissions, sessions or secrets)"
+        reasons = [reg1(i) for i in range(1, 15)] + [SEC2, other]
+        self.assertEqual(
+            why(fu6_card(reasons)),
+            [f"- {reg1(i)}" for i in range(1, 12)] + [f"- {SEC2}", more(4)],
+        )
+
+    def test_order_no_duplicates_and_rest_of_card_unchanged(self):  # AC4
+        lead = "no rating needed: docs only"  # not a dimension line: an ordinary filler
+        reasons = [lead] + [reg1(i) for i in range(1, 16)] + [SEC2, "user 1: app/u.py (copy)"]
+        blockers = ["review verdict is CHANGES, not APPROVE"]
+        for lane, mode, hours_ok in (("review", "enforce", True), ("auto", "enforce", False)):
+            with self.subTest(lane=lane, hours_ok=hours_ok):
+                card = fu6_card(reasons, blockers=blockers, lane=lane, mode=mode, hours_ok=hours_ok)
+                shown = why(card)
+                bullets = [b[2:] for b in shown[:-1]]
+                self.assertEqual(len(bullets), len(set(bullets)))
+                self.assertEqual(bullets, [r for r in reasons if r in bullets])  # original order
+                self.assertEqual(bullets[0], lead)
+                self.assertIn(SEC2, bullets)
+                self.assertIn("user 1: app/u.py (copy)", bullets)
+                old = fu6_card(
+                    reasons[:12], blockers=blockers, lane=lane, mode=mode, hours_ok=hours_ok
+                )
+                self.assertTrue(card.startswith(g.CARD_MARK))
+                self.assertEqual(card.split("**Why**")[0], old.split("**Why**")[0])
+                tail = "\n\n**Not eligible for auto-merge**"
+                self.assertEqual(card[card.index(tail) :], old[old.index(tail) :])
+
+    def test_more_count_and_exactly_12_bullets_plus_more(self):  # AC5
+        for n in (13, 14, 20, 40):
+            for extra in ([], [SEC2], [SEC2, "user 2: app/ui/a.tsx (screens)"]):
+                reasons = [reg1(i) for i in range(1, n + 1 - len(extra))] + extra
+                with self.subTest(n=n, extra=len(extra)):
+                    self.assertEqual(len(reasons), n)
+                    shown = why(fu6_card(reasons))
+                    self.assertEqual(len(shown), 13)
+                    self.assertTrue(all(b.startswith("- ") for b in shown))
+                    self.assertEqual(shown[-1], more(n - 12))
+                    for e in extra:
+                        self.assertIn(f"- {e}", shown)
+
+    def test_posted_card_shows_security_reason_after_12_ordinary_files(self):  # AC2 end to end
+        files = [f"app/f{i}.py" for i in range(1, 13)] + ["app/AUTH/x.py"]
+        dry = run_gate(files, [rating()], env={"RISK_GATE_DRY_RUN": "1"})
+        listed = [ln[2:] for ln in dry["out"].splitlines()[1:] if not ln.startswith("  not auto: ")]
+        self.assertGreater(len(listed), 12)
+        self.assertEqual(listed[-1], SEC2)  # the bug: it sorts after 12+ floor lines
+        r = run_gate(files, [rating()])
+        self.assertEqual(len(r["cards"]), 1)
+        shown = why(r["cards"][0])
+        self.assertIn(f"- {SEC2}", shown)
+        self.assertEqual(shown[-1], more(len(listed) - 12))
+        self.assertIn("description=review R1 S2 U0", r["statuses"][-1])
+
+
 class Main(unittest.TestCase):
     """main() against a fake gh: call order is the security property here."""
 
