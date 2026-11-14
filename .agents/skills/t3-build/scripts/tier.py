@@ -20,7 +20,7 @@ GUARDRAIL = (
     ".github/*", "*/AGENTS.md", "*/AGENTS.override.md", "*/AGENT.md", "*/CLAUDE.md",
     "*/CLAUDE.local.md", "*/GEMINI.md", "*/WARP.md", "*/CRUSH.md", "*/CRUSH.local.md",
     "*/QWEN.md", "*/.claude/*", "*/.codex/*", "*/.opencode/*", "*/.agents/*", "*/.mcp.json",
-    "*/risk-policy.toml", "staging/*",
+    "*/opencode.json", "*/opencode.jsonc", "*/.cursor/*", "*/risk-policy.toml", "staging/*",
 )
 TRIGGERS = ("dependency", "interface", "schema", "concurrency", "untrusted-input")
 
