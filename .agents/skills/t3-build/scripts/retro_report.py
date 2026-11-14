@@ -117,7 +117,8 @@ def read_git(path):
     A commit is a merged pull request ("pr") when its subject starts `Merge pull request #` (merge commit),
     or when its subject ends ` (#<n>)` and it is a non-merge commit (at most one parent) on the first-parent
     line (squash, or a rebase merge that kept the suffix). Limits: a rebase merge without the suffix is not
-    counted; a direct main-line commit whose subject ends `(#<n>)` is counted (GitHub's convention, accepted).
+    counted; a direct main-line commit whose subject ends `(#<n>)` is counted (GitHub's convention, accepted);
+    a side commit of a merge-commit PR is not on the first-parent line and is not counted.
     """
     # Agent:/Tier: sit in their own paragraph before Co-Authored-By: (references/commit-trailers.md), which
     # git's trailer parser ignores, so the lines are read from the message body.

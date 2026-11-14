@@ -15,12 +15,12 @@ own log) never fires and the flag `git has more merged pull requests than the lo
 In `read_git` a commit counts as a merged pull request when either:
 1. its subject starts `Merge pull request #<digits>` (unchanged), or
 2. its subject ends with ` (#<digits>)` (a space, `(#`, one or more digits, `)`, end of subject) and the
-   commit is on the first-parent history of `HEAD` and has exactly one parent (a squash or a rebase
-   merge that kept the title suffix).
+   commit is on the first-parent history of `HEAD` and is not a merge (at most one parent: a squash or a
+   rebase merge that kept the title suffix; a root commit has no parent, is not a merge, and counts if
+   its subject has the suffix: accepted, and the frozen fixture relies on it).
 
 A commit counts at most once. Everything else of 4.1 is unchanged: the flags, the other rows, the
-output format, `--since`. The README and `SKILL` text that describe the row say "merge commit or squash
-(#n) subject". Limits (stated in the docstring): a repo that merges by rebase without the `(#n)` suffix
+output format, `--since`. No README or SKILL text describes the row; the docstring is the documentation. Limits (stated in the docstring): a repo that merges by rebase without the `(#n)` suffix
 is not counted; a direct commit to the main line whose subject happens to end in `(#n)` is counted
 (GitHub's own convention; accepted); a side commit of a merge-commit PR whose subject ends `(#n)` is
 not on the first-parent history (or has the merge as child) and is not counted.
@@ -41,6 +41,13 @@ not on the first-parent history (or has the merge as child) and is not counted.
 | AC3 | Not counted: a subject without the suffix; `(#12)` in the middle of a subject; `(#)` or `(#a)`; ` (#5) ` followed by text; the side commits of a `--no-ff` merge-commit PR even when their subjects end `(#n)` (not on the first-parent line); a merge commit (two parents) whose subject ends `(#n)` but does not start `Merge pull request #`. | test |
 | AC4 | A commit that matches both forms counts once (a merge commit titled `Merge pull request #7 ... (#7)`). `--since` filters squash PRs by commit date as before. | test |
 | AC5 | All existing tests pass unchanged. The docstring states the two forms and the limits. | existing tests |
+
+## Review log
+
+Sol round 1: the code said 'at most one parent' (root counts) while the spec said 'exactly one'; the frozen
+fixture's first commit is a root commit with a `(#1)` subject and expects it to count, so the spec was
+corrected, not the code. The claimed README/SKILL text did not exist; removed. Docstring now names the
+side-commit exclusion.
 
 ## Non-goals
 
