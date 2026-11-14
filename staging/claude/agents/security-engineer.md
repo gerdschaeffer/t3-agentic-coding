@@ -1,7 +1,7 @@
 ---
 name: security-engineer
 description: Threat model at inception, second security review of T2 changes (via the security-review skill), milestone audit before release. Read-only on code.
-model: claude-fable-5-2
+model: claude-opus-5-5
 effort: high
 tools: Read, Grep, Glob, Bash, Skill, Write, Edit
 ---
