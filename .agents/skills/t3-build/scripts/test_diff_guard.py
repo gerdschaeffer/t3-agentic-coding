@@ -1356,5 +1356,81 @@ class TestSecurityRound2AC29KillBeforeReap(Base):
             self.assertIn("too large", out)
 
 
+
+# ---------------------------------------------------------------- security round 3 (spec section 19)
+
+import errno  # noqa: E402
+
+from test_check_trailers import (bounded_reap_case, bounded_select_case, deferred_sigterm_case,  # noqa: E402
+                                 kill_failure_case)
+
+
+class TestSecurityRound3AC30DeferredSigterm(Base):
+    """AC30: the SIGTERM handler only sets a flag; run_git sees it within 0.1 s, kills the group, reaps
+    git and exits 143. A SIGTERM at any point leaves no git and no child alive."""
+
+    def args(self):
+        return ["--base", "main", "--head", "HEAD", "--repo", self.tmp]
+
+    def test_a_sigterm_while_git_runs_and_ignores_sigterm(self):
+        deferred_sigterm_case(self, SCRIPT, self.args())
+
+    def test_b_two_sigterms_in_a_row(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), signals=2)
+
+    def test_c_sigterm_right_after_popen_returns(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="popen")
+
+    def test_d_sigterm_during_cleanup(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="killpg")
+
+    def test_d_sigterm_during_cleanup_with_lingering_child(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="killpg", linger=True)
+
+    def test_select_wait_is_bounded(self):
+        bounded_select_case(self, SCRIPT, "diff_guard_round3_select", ["diff", "--raw"])
+
+
+class TestSecurityRound3AC32KillFailures(Base):
+    """AC32: an OSError from killpg other than ProcessLookupError makes run_git fail with exit 2 and
+    `could not terminate git`; the reap is bounded (wait(timeout=5)); ProcessLookupError is ignored."""
+
+    DIFF = ["diff", "--raw"]
+
+    def eperm(self):
+        return PermissionError(errno.EPERM, "Operation not permitted")
+
+    def esrch(self):
+        return ProcessLookupError(errno.ESRCH, "No such process")
+
+    def test_permission_error_on_timeout(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "diff_guard_round3_eperm_stall", "stall",
+                                             self.DIFF, self.eperm())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("could not terminate git", err)
+
+    def test_permission_error_on_overflow(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "diff_guard_round3_eperm_flood", "flood",
+                                             self.DIFF, self.eperm())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("could not terminate git", err)
+
+    def test_process_lookup_error_is_ignored_on_timeout(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "diff_guard_round3_esrch_stall", "stall",
+                                             self.DIFF, self.esrch())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("timed out", err)
+        self.assertNotIn("could not terminate", err)
+
+    def test_process_lookup_error_is_ignored_on_overflow(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "diff_guard_round3_esrch_flood", "flood",
+                                             self.DIFF, self.esrch())
+        self.assertEqual(raised.code, 1)
+        self.assertIn("too large", out)
+        self.assertNotIn("could not terminate", err)
+
+    def test_reap_timeout_fails_with_exit_2(self):
+        bounded_reap_case(self, SCRIPT, "diff_guard_round3_reap", self.DIFF)
+
 if __name__ == "__main__":
     unittest.main()

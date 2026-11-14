@@ -829,5 +829,192 @@ class TestSecurityRound2AC27ModelsParents(Base):
         self.clean(cp)
 
 
+
+# ---------------------------------------------------------------- security round 3 (spec section 19)
+
+import contextlib  # noqa: E402
+import importlib.util  # noqa: E402
+import io  # noqa: E402
+from unittest import mock  # noqa: E402
+
+
+class TestSecurityRound3AC31ModelsPathForms(Base):
+    """AC31: a --models value with a `..` component, an empty component (`//`, trailing `/`) or an
+    empty value exits 2 with empty stdout; `.` components are removed. Inside --root is decided by
+    directory identity (os.path.samefile on the lexical ancestors), so a second path to the root still
+    gets the AC27 walk. Values are passed as raw strings: pathlib would normalise them."""
+
+    def setUp(self):
+        super().setUp()
+        self.r = self.root()
+        (self.r / "refs").mkdir()
+        (self.r / "models.md").write_text(MODELS)
+        (self.r / "refs" / "models.md").write_text(MODELS)
+        self.models()  # tmp/models.md: a valid file outside --root
+        self.elsewhere = self.tmp / "elsewhere"
+        self.elsewhere.mkdir()
+        (self.elsewhere / "models.md").write_text(MODELS)
+        (self.r / "linked-refs").symlink_to(self.elsewhere, target_is_directory=True)
+
+    def rejected(self, cases):
+        for label, cwd, value in cases:
+            with self.subTest(case=label, models=value):
+                self.usage_error(self.run_ca("--root", self.r, "--models", value, cwd=cwd), label)
+
+    def accepted(self, cases, root=None):
+        for label, cwd, value in cases:
+            with self.subTest(case=label, models=value):
+                self.clean(self.run_ca("--root", root or self.r, "--models", value, cwd=cwd))
+
+    def test_dotdot_component_exit_2(self):
+        t, r = str(self.tmp), str(self.r)
+        self.rejected([
+            ("inside, absolute", self.cwd, f"{r}/refs/../models.md"),
+            ("inside, relative", self.tmp, "root/refs/../models.md"),
+            ("inside, leading ..", self.r / "refs", "../models.md"),
+            ("outside, absolute", self.cwd, f"{t}/cwd/../models.md"),
+            ("outside, relative", self.cwd, "../models.md"),
+        ])
+
+    def test_empty_component_exit_2(self):
+        t, r = str(self.tmp), str(self.r)
+        self.rejected([
+            ("inside, absolute", self.cwd, f"{r}//models.md"),
+            ("inside, nested", self.cwd, f"{r}/refs//models.md"),
+            ("inside, relative", self.tmp, "root//refs/models.md"),
+            ("outside, absolute", self.cwd, f"{t}//models.md"),
+        ])
+
+    def test_trailing_slash_exit_2(self):
+        t, r = str(self.tmp), str(self.r)
+        self.rejected([
+            ("inside, file", self.cwd, f"{r}/models.md/"),
+            ("inside, nested file", self.cwd, f"{r}/refs/models.md/"),
+            ("inside, relative", self.tmp, "root/models.md/"),
+            ("outside, file", self.cwd, f"{t}/models.md/"),
+        ])
+
+    def test_empty_value_exit_2(self):
+        self.rejected([("cwd outside root", self.cwd, ""), ("cwd is root", self.r, "")])
+
+    def test_dot_components_are_removed(self):
+        t, r = str(self.tmp), str(self.r)
+        self.accepted([
+            ("inside, absolute", self.cwd, f"{r}/./models.md"),
+            ("inside, nested", self.cwd, f"{r}/refs/./models.md"),
+            ("inside, relative", self.tmp, "./root/./refs/models.md"),
+            ("inside, from root", self.r, "./models.md"),
+            ("outside, absolute", self.cwd, f"{t}/./models.md"),
+        ])
+
+    def test_dot_components_do_not_hide_a_symlink_below_root(self):
+        r = str(self.r)
+        self.rejected([
+            ("absolute", self.cwd, f"{r}/./linked-refs/models.md"),
+            ("relative", self.tmp, "./root/linked-refs/./models.md"),
+        ])
+
+    def test_root_reached_through_a_symlinked_parent_is_inside(self):
+        # tmp/link -> tmp, so tmp/link/root is the same folder as --root by another path.
+        (self.tmp / "link").symlink_to(self.tmp, target_is_directory=True)
+        t = str(self.tmp)
+        self.rejected([
+            ("absolute", self.cwd, f"{t}/link/root/linked-refs/models.md"),
+            ("relative", self.tmp, "link/root/linked-refs/models.md"),
+        ])
+        self.accepted([
+            ("absolute", self.cwd, f"{t}/link/root/refs/models.md"),
+            ("relative", self.tmp, "link/root/refs/models.md"),
+        ])
+
+    def test_symlink_to_root_below_root_exit_2(self):
+        # root/self -> root: the ancestor root/self is the same folder as --root too; the walk must start
+        # at the shallowest such ancestor, so the link below it is still seen.
+        (self.r / "self").symlink_to(self.r, target_is_directory=True)
+        self.rejected([
+            ("absolute", self.cwd, f"{self.r}/self/models.md"),
+            ("relative", self.tmp, "root/self/refs/models.md"),
+        ])
+
+    def test_case_alias_of_root_is_inside(self):
+        alias = self.tmp / "ROOT"
+        if not (alias.exists() and os.path.samefile(alias, self.r)):
+            self.skipTest("case-sensitive file system: no case alias of --root exists")
+        t = str(self.tmp)
+        self.rejected([
+            ("alias in models, absolute", self.cwd, f"{t}/ROOT/linked-refs/models.md"),
+            ("alias in models, relative", self.tmp, "ROOT/linked-refs/models.md"),
+        ])
+        for label, cwd, root, value in (("alias as --root", self.cwd, alias, f"{t}/root/linked-refs/models.md"),
+                                        ("alias in both", self.cwd, alias, f"{t}/ROOT/linked-refs/models.md")):
+            with self.subTest(case=label):
+                self.usage_error(self.run_ca("--root", root, "--models", value, cwd=cwd), label)
+        self.accepted([
+            ("alias in models, real folder", self.cwd, f"{t}/ROOT/refs/models.md"),
+            ("alias in models, relative", self.tmp, "ROOT/models.md"),
+        ])
+
+
+def load_check_agents(test, name):
+    test.assertTrue(SCRIPT.is_file(), f"script missing: {SCRIPT}")
+    sys.dont_write_bytecode = True  # loading the module under test must leave no __pycache__
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class TestSecurityRound3AC33PinnedFolders(Base):
+    """AC33: each agents folder is opened once (O_DIRECTORY|O_NOFOLLOW, walked from --root) and listed
+    and read through that descriptor. A hook on os.open replaces claude/agents by a symlink to an
+    external folder right after the folder's first open; the external files are never read."""
+
+    def swap_case(self, inside, outside, name):
+        root = self.root()
+        agents = root / "claude" / "agents"
+        for stem, body in inside.items():
+            (agents / f"{stem}.md").write_text(body)
+        external = self.tmp / "external-agents"
+        external.mkdir()
+        for stem, body in outside.items():
+            (external / f"{stem}.md").write_text(body)
+        models = self.models()
+        st = os.stat(agents)
+        folder = (st.st_dev, st.st_ino)
+        external_ids = {(s.st_dev, s.st_ino) for s in (os.stat(p) for p in [external, *external.iterdir()])}
+        m = load_check_agents(self, name)
+        real_open, state = os.open, {"swapped": False, "external": []}
+
+        def hook(path, flags, mode=0o777, *, dir_fd=None):
+            fd = real_open(path, flags, mode, dir_fd=dir_fd)
+            s = os.fstat(fd)
+            if (s.st_dev, s.st_ino) in external_ids:
+                state["external"].append(path)
+            if not state["swapped"] and (s.st_dev, s.st_ino) == folder:
+                state["swapped"] = True
+                os.rename(agents, root / "claude" / "agents-pinned")
+                os.symlink(external, agents, target_is_directory=True)
+            return fd
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(m.os, "open", hook), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = m.main(["--root", str(root), "--models", str(models)])
+        self.assertTrue(state["swapped"], "claude/agents was never opened with os.open: the folder is not pinned "
+                                          "by a descriptor, so a swap after the check is followed")
+        self.assertTrue(agents.is_symlink(), "fixture: the swap did not happen")
+        self.assertEqual(state["external"], [], "a file or folder of the swapped-in external folder was opened")
+        return subprocess.CompletedProcess([], code, out.getvalue(), err.getvalue())
+
+    def test_swap_to_drifting_external_folder_is_not_followed(self):
+        outside = {k: v.replace("model: claude-x-1", "model: claude-outside-9")
+                   .replace("model: claude-y-2", "model: claude-outside-9") for k, v in CLAUDE.items()}
+        self.assertNotEqual(outside, CLAUDE)
+        self.clean(self.swap_case(CLAUDE, outside, "check_agents_round3_swap_drift"))
+
+    def test_swap_to_matching_external_folder_is_not_followed(self):
+        inside = dict(CLAUDE, alpha=CLAUDE["alpha"].replace("model: claude-x-1", "model: claude-inside-7"))
+        cp = self.swap_case(inside, CLAUDE, "check_agents_round3_swap_match")
+        self.problems(cp, rf"{P}claude/agents/alpha\.md: model claude-inside-7 != claude-x-1")
+
 if __name__ == "__main__":
     unittest.main()

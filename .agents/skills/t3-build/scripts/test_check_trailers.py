@@ -1176,5 +1176,275 @@ class TestSecurityRound2AC29KillBeforeReap(Base):
             self.assertIn("too large", out)
 
 
+
+# ---------------------------------------------------------------- security round 3 (spec section 19)
+# Shared with test_diff_guard.py (imported there): deferred SIGTERM (AC30) and kill failures (AC32).
+
+import errno  # noqa: E402
+import select  # noqa: E402
+
+# Loads the script, points GIT at a stub (GIT_TIMEOUT 30: only a signal ends the run in time), installs
+# an optional hook, runs main. Hooks deliver a SIGTERM to the script itself at a fixed point:
+#   popen:  right after subprocess.Popen returns (once the stub's child exists), before run_git's loop;
+#   killpg: at the start of the cleanup, before the real os.killpg.
+SIGTERM_DRIVER = r"""
+import importlib.util, os, signal, subprocess, sys, time
+path, stub, hook, childfile = sys.argv[1:5]
+name = os.path.splitext(os.path.basename(path))[0]
+spec = importlib.util.spec_from_file_location(name, path)
+m = importlib.util.module_from_spec(spec)
+sys.modules[name] = m
+spec.loader.exec_module(m)
+m.GIT, m.MAX_BYTES, m.GIT_TIMEOUT = stub, 100000, 30
+
+
+def child_started():
+    end = time.monotonic() + 20
+    while time.monotonic() < end:
+        try:
+            if open(childfile).read().strip().isdigit():
+                return
+        except OSError:
+            pass
+        time.sleep(0.02)
+
+
+if hook == "popen":
+    class Signalling(subprocess.Popen):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            child_started()
+            os.kill(os.getpid(), signal.SIGTERM)
+    subprocess.Popen = Signalling
+elif hook == "killpg":
+    real_killpg = os.killpg
+
+    def killpg(pgid, sig):
+        os.kill(os.getpid(), signal.SIGTERM)
+        return real_killpg(pgid, sig)
+    os.killpg = killpg
+elif hook != "none":
+    raise SystemExit("unknown hook " + hook)
+sys.argv = [path] + sys.argv[5:]
+sys.exit(m.main())
+"""
+
+
+def stubborn_stub(path, pidfile, childfile, linger=False):
+    """A `git` that ignores SIGTERM and forks a child that ignores it too (pid written to childfile).
+
+    The child sleeps in git's process group and holds git's stdout. git sleeps as well, or with
+    linger exits at once (a zombie until reaped) and leaves the child behind."""
+    path.write_text(f"#!{sys.executable}\nimport os, signal, sys, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+                    "child = os.fork()\n"
+                    "if child == 0:\n    time.sleep(60)\n    os._exit(0)\n"
+                    f"with open({str(childfile)!r}, 'w') as f:\n    f.write(str(child))\n"
+                    + ("os._exit(0)\n" if linger else "time.sleep(60)\n"))
+    path.chmod(0o755)
+    return path
+
+
+def deferred_sigterm_case(test, script, args, hook="none", signals=1, linger=False):
+    """AC30: run the script through SIGTERM_DRIVER with a stubborn stub; send `signals` SIGTERMs from
+    outside (none for the popen hook, which signals itself). Asserts exit 143 and that git and git's
+    child are dead within 3 s of the signal."""
+    test.assertTrue(script.is_file(), f"script missing: {script}")
+    pidfile, childfile = test.tmp / "stub.pid", test.tmp / "child.pid"
+    stub = stubborn_stub(test.tmp / "git-stubborn", pidfile, childfile, linger)
+    p = subprocess.Popen([sys.executable, "-c", SIGTERM_DRIVER, str(script), str(stub), hook, str(childfile),
+                          *map(str, args)],
+                         cwd=str(test.cwd), env=test.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    test.addCleanup(lambda: p.poll() is None and (p.kill(), p.wait()))
+    end = time.monotonic() + 20
+    while (read_pid(pidfile) is None or read_pid(childfile) is None) and time.monotonic() < end and p.poll() is None:
+        time.sleep(0.02)
+    pid, child = read_pid(pidfile), read_pid(childfile)
+    if pid:
+        test.addCleanup(kill_quietly, pid)
+    if child:
+        test.addCleanup(kill_quietly, child)
+    test.assertTrue(pid and child, f"the stub never started its child (script exit {p.poll()})")
+    t0 = time.monotonic()
+    if hook != "popen":
+        test.assertIsNone(p.poll(), "fixture: the script ended before the signal")
+        for _ in range(signals):
+            p.send_signal(signal.SIGTERM)
+    try:
+        out, err = p.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        test.fail("the script did not exit within 15 s of SIGTERM")
+    err = err.decode(errors="replace")
+    test.assertTrue(pid_dead(pid, grace=max(0.0, t0 + 3 - time.monotonic())),
+                    f"git (stub) still alive 3 s after SIGTERM: cleanup did not reap it (stderr {err[-300:]!r})")
+    test.assertTrue(pid_dead(child, grace=max(0.0, t0 + 3 - time.monotonic())),
+                    f"git's child still alive 3 s after SIGTERM: the group was not killed (stderr {err[-300:]!r})")
+    test.assertEqual(p.returncode, 143, f"exit {p.returncode}; stdout={out!r}; stderr={err[-500:]!r}")
+
+
+def bounded_select_case(test, script, name, args):
+    """AC30: every select wait in run_git is at most 0.1 s, so a deferred SIGTERM is seen quickly."""
+    m = load_module(test, script, name)
+    pidfile = test.tmp / "stub.pid"
+    stub = test.tmp / "git-slow"
+    stub.write_text(f"#!{sys.executable}\nimport os, time\nopen({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+                    "time.sleep(0.6)\n")
+    stub.chmod(0o755)
+    timeouts, real_select = [], select.select
+
+    def recording(r, w, x, *timeout):
+        timeouts.append(timeout[0] if timeout else None)
+        return real_select(r, w, x, *timeout)
+
+    with mock.patch.object(m.select, "select", recording):
+        result, raised, took, out, err = call_run_git(m, stub, args, test.tmp, timeout=5)
+    pid = read_pid(pidfile)
+    if pid:
+        test.addCleanup(kill_quietly, pid)
+    test.assertIsNone(raised, f"run_git failed on a slow, clean git: {raised!r} {err!r}")
+    test.assertEqual(result, b"")
+    test.assertTrue(timeouts, "run_git never waited in select")
+    test.assertTrue(all(t is not None and t <= 0.1 for t in timeouts),
+                    f"select waits longer than 0.1 s, a deferred SIGTERM waits with it: {sorted(set(timeouts))[-3:]}")
+
+
+def kill_failure_case(test, script, name, mode, args, error):
+    """AC32: run_git (timeout or overflow) with os.killpg killing for real and then raising `error`.
+    Returns (raised, stdout, stderr) after asserting git and its child are gone."""
+    m = load_module(test, script, name)
+    pidfile, childfile = test.tmp / "stub.pid", test.tmp / "child.pid"
+    stub = group_stub(test.tmp / f"git-killfail-{mode}", pidfile, childfile, mode)
+    real_killpg, calls = os.killpg, []
+
+    def killpg(pgid, sig):
+        calls.append((pgid, sig))
+        real_killpg(pgid, sig)
+        raise error
+
+    with mock.patch.object(m.os, "killpg", killpg):
+        result, raised, took, out, err = call_run_git(m, stub, args, test.tmp, timeout=1)
+    pid, child = read_pid(pidfile), read_pid(childfile)
+    test.assertTrue(pid and child, "the stub never started its child")
+    test.addCleanup(kill_quietly, pid)
+    test.addCleanup(kill_quietly, child)
+    test.assertTrue(calls, "os.killpg was never called")
+    test.assertIsInstance(raised, SystemExit, f"run_git returned {result!r} or raised {raised!r}")
+    test.assertLess(took, 15)
+    test.assertTrue(pid_dead(pid), "git (stub) still alive or a zombie after run_git")
+    test.assertTrue(pid_dead(child), "git's child still alive after run_git")
+    return raised, out, err
+
+
+def bounded_reap_case(test, script, name, args):
+    """AC32: the reap after the kill uses wait(timeout=5); on TimeoutExpired run_git fails with exit 2
+    and `could not terminate git`. Popen.wait raises TimeoutExpired once os.killpg has been called."""
+    m = load_module(test, script, name)
+    pidfile, childfile = test.tmp / "stub.pid", test.tmp / "child.pid"
+    stub = group_stub(test.tmp / "git-reapfail", pidfile, childfile, "stall")
+    real_killpg, real_popen = os.killpg, subprocess.Popen
+    killed, waits, made = [], [], []
+
+    def killpg(pgid, sig):
+        killed.append(pgid)
+        return real_killpg(pgid, sig)
+
+    class Stuck(real_popen):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(self)
+
+        def wait(self, timeout=None):
+            if killed:
+                waits.append(timeout)
+                raise subprocess.TimeoutExpired(self.args, timeout or 0)
+            return super().wait(timeout)
+
+    with mock.patch.object(m.os, "killpg", killpg), mock.patch.object(m.subprocess, "Popen", Stuck):
+        result, raised, took, out, err = call_run_git(m, stub, args, test.tmp, timeout=1)
+    for p in made:  # reap for real, so no zombie outlives the test
+        test.addCleanup(real_popen.wait, p)
+    pid, child = read_pid(pidfile), read_pid(childfile)
+    test.assertTrue(pid and child, "the stub never started its child")
+    test.addCleanup(kill_quietly, pid)
+    test.addCleanup(kill_quietly, child)
+    test.assertTrue(killed, "os.killpg was never called")
+    test.assertTrue(waits, "git is not waited for after the kill")
+    test.assertEqual(waits[0], 5, f"the reap after the kill is not wait(timeout=5): timeouts {waits}")
+    test.assertIsInstance(raised, SystemExit, f"run_git returned {result!r} or raised {raised!r}")
+    test.assertEqual(raised.code, 2)
+    test.assertIn("could not terminate git", err)
+    test.assertLess(took, 15)
+
+
+class TestSecurityRound3AC30DeferredSigterm(Base):
+    """AC30: the SIGTERM handler only sets a flag; run_git sees it within 0.1 s, kills the group, reaps
+    git and exits 143. A SIGTERM at any point leaves no git and no child alive."""
+
+    ARGS = ["--branch", "agent/x", "--base", "main", "--head", "HEAD", "--repo"]
+
+    def args(self):
+        return [*self.ARGS, self.tmp]
+
+    def test_a_sigterm_while_git_runs_and_ignores_sigterm(self):
+        deferred_sigterm_case(self, SCRIPT, self.args())
+
+    def test_b_two_sigterms_in_a_row(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), signals=2)
+
+    def test_c_sigterm_right_after_popen_returns(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="popen")
+
+    def test_d_sigterm_during_cleanup(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="killpg")
+
+    def test_d_sigterm_during_cleanup_with_lingering_child(self):
+        deferred_sigterm_case(self, SCRIPT, self.args(), hook="killpg", linger=True)
+
+    def test_select_wait_is_bounded(self):
+        bounded_select_case(self, SCRIPT, "check_trailers_round3_select", ["log", "--format=%H"])
+
+
+class TestSecurityRound3AC32KillFailures(Base):
+    """AC32: an OSError from killpg other than ProcessLookupError makes run_git fail with exit 2 and
+    `could not terminate git`; the reap is bounded (wait(timeout=5)); ProcessLookupError is ignored."""
+
+    LOG = ["log", "--format=%H"]
+
+    def eperm(self):
+        return PermissionError(errno.EPERM, "Operation not permitted")
+
+    def esrch(self):
+        return ProcessLookupError(errno.ESRCH, "No such process")
+
+    def test_permission_error_on_timeout(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "check_trailers_round3_eperm_stall", "stall",
+                                             self.LOG, self.eperm())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("could not terminate git", err)
+
+    def test_permission_error_on_overflow(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "check_trailers_round3_eperm_flood", "flood",
+                                             self.LOG, self.eperm())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("could not terminate git", err)
+
+    def test_process_lookup_error_is_ignored_on_timeout(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "check_trailers_round3_esrch_stall", "stall",
+                                             self.LOG, self.esrch())
+        self.assertEqual(raised.code, 2)
+        self.assertIn("timed out", err)
+        self.assertNotIn("could not terminate", err)
+
+    def test_process_lookup_error_is_ignored_on_overflow(self):
+        raised, out, err = kill_failure_case(self, SCRIPT, "check_trailers_round3_esrch_flood", "flood",
+                                             self.LOG, self.esrch())
+        self.assertEqual(raised.code, 1)
+        self.assertIn("too large", out)
+        self.assertNotIn("could not terminate", err)
+
+    def test_reap_timeout_fails_with_exit_2(self):
+        bounded_reap_case(self, SCRIPT, "check_trailers_round3_reap", self.LOG)
+
 if __name__ == "__main__":
     unittest.main()
