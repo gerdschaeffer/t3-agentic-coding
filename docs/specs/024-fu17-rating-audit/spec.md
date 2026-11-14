@@ -27,7 +27,7 @@ this spec. MUST as in RFC 2119.
      (over 256 KiB), a comment without the marker line or with a bad value, a reply with no `VERDICT:`
      or no `RISK` line (it cannot be audited): message on stderr, stdout empty. Every printed value
      is one of the fixed tokens or a digit; file text is never echoed.
-2. **`references/rating-audit.md`** (new): who audits, when, and how. The reply is read from the
+2. **`references/rating-audit.md`** (new): who audits, when, and how. Sol round 1 (S2, S3): the comment is selected by trusted login and exact marker (newest per head SHA, as the gate does), paginated; the monthly audit is run by the human or by the lead in a fresh thread, because the `maintainer` agent has no T3 thread access (checks.md section 5 says so: `not run: no thread access`). The reply is read from the
    delegate thread of the review round (`t3_thread_read` of the `childThreadId` kept in the ledger),
    not from a file the leader wrote, because the leader that relays the rating could also edit its own
    copy; the thread is Sol's own record. The audit runs by a party other than the relaying thread
@@ -55,6 +55,7 @@ this spec. MUST as in RFC 2119.
 | AC3 | `security_pass: clean` with no `--security-reply`, with `FINDINGS`, or with `CLEAN`: FAIL `unverified`, FAIL, pass. `security_pass: n/a` needs no security reply. | tests |
 | AC4 | The last matching line wins in the reply (a round-1 `VERDICT: CHANGES` followed by a final `VERDICT: APPROVE`; two RISK lines); a `RISK` or `VERDICT:` text inside a longer line or an indented one does not count. CRLF input works. | tests |
 | AC4b | Real replies end the RISK line with ` reasons: <text>` (the review brief asks for it): `RISK regression=1 security=0 user=0 reasons: any text` is accepted, the reasons text is never printed, and a RISK line with a bad number or with other text after the digits (not ` reasons: `) still exits 2. Found by the lead's dry run on a real Sol reply. | tests |
+| AC8 | Sol round 1 (S1): the comment is read exactly as the gate reads it (`risk_gate.parse_rating`, imported from the sibling `gate/` folder like `tier.py` does): keys trimmed and lower-cased, values trimmed, the last occurrence of a key wins, `regression:0` and `Regression:  0 ` count. A comment with `regression: 2` followed by `regression: 0` is audited as 0 (FAIL against Sol's 2); `Regression: 0`, a trailing space and `regression:0` are audited as 0 too. A comment the gate would reject (missing or out-of-range field) is exit 2, as before. `verdict` must be `APPROVE` or `CHANGES` and `security_pass` `clean` or `n/a` after the same normalisation, else exit 2. | tests |
 | AC5 | Exit 2 with empty stdout for: a missing file, a file over 256 KiB, a comment whose first line is not the marker, a marker SHA that is not 40 lower-case hex or differs from `--sha`, a missing or out-of-range value (`regression: 4`), a reply with no `VERDICT:` or no `RISK`. | tests |
 | AC6 | The script never prints file text beyond the fixed tokens (a reply with control characters and a long garbage line prints none of it). | test |
 | AC7 | Docs: `references/rating-audit.md` exists and names the thread-read source, the cadence, the two auditors and the list of what is not checked; `ship.md` links to it; links resolve. | text tests, link check |
